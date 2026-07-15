@@ -1,0 +1,4 @@
+{
+    "inherits": ["xiao-esp32c6"],
+    "linkerscript": "esp32c6-wifi.ld"
+}
