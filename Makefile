@@ -15,6 +15,7 @@ update: update-esp-wifi
 	cp -rp esp-wifi/c/include      blobs
 	cp -rp esp-wifi/esp-wifi-sys-esp32c3/libs blobs/libs/esp32c3
 	cp -rp esp-wifi/esp-wifi-sys-esp32s3/libs blobs/libs/esp32s3
+	cp -rp esp-wifi/esp-wifi-sys-esp32c6/libs blobs/libs/esp32c6
 
 patch-esp32s3:
 	go run ./tools/patch_xtensa_literals.go blobs/libs/esp32s3/*.a
