@@ -378,8 +378,31 @@ esp_err_t espradio_wifi_init(void) {
         memcpy(dst, src, sizeof(*dst));
     }
 #else
-    /* C3 (RISC-V): no OR-offset bug, use the macro directly. */
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    /* RISC-V (C3/C6).  The clang OR-offset bug is NOT Xtensa-only: it also
+     * bites here.  WIFI_INIT_CONFIG_DEFAULT() copies
+     * g_wifi_default_wpa_crypto_funcs into cfg.wpa_crypto_funcs (offset 4);
+     * clang computes the destination &cfg.wpa_crypto_funcs as (base | 4)
+     * instead of (base + 4), which equals base when cfg's stack address has
+     * bit 2 set — so the copy lands 4 bytes low.  The blob then reads
+     * cfg.wpa_crypto_funcs.{size,version} shifted by one field and rejects
+     * init with ESP_ERR_INVALID_ARG (blob log: "crypto funcs expected
+     * size=44 version=1, actual size=1 version=<fnptr>").  Whether cfg lands
+     * on a bit-2-set address depends on surrounding code, which is exactly
+     * the layout-dependent C6 init flake.  (The C3 has been getting lucky.)
+     *
+     * Two-layer fix, same as the Xtensa path above:
+     *   1. aligned(8) forces cfg's stack address to have bits 0-2 clear, so
+     *      (base | 4) == (base + 4) for the initializer's own copy.
+     *   2. Redo the wpa_crypto_funcs copy through offsetof + char* so the
+     *      compiler emits an ADD regardless, and re-set osi_funcs afterward
+     *      in case a mis-landed copy clobbered it. */
+    wifi_init_config_t cfg __attribute__((aligned(8))) = WIFI_INIT_CONFIG_DEFAULT();
+    {
+        const wpa_crypto_funcs_t *src = &g_wifi_default_wpa_crypto_funcs;
+        wpa_crypto_funcs_t *dst = (wpa_crypto_funcs_t *)(
+            (char *)&cfg + offsetof(wifi_init_config_t, wpa_crypto_funcs));
+        memcpy(dst, src, sizeof(*dst));
+    }
     cfg.osi_funcs = s_heap_osi_funcs;
     cfg.nvs_enable = 0;
 #ifdef CONFIG_IDF_TARGET_ESP32C6
