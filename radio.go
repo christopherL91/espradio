@@ -297,6 +297,19 @@ func DebugHWISRCount() uint32 {
 	return atomic.LoadUint32(&hwWifiISRs)
 }
 
+// DebugTSF returns the WiFi MAC's TSF time in microseconds.  A frozen TSF
+// while the driver is started means the MAC engine itself is not running
+// (clock/reset/power), regardless of how healthy everything else looks.
+func DebugTSF() int64 {
+	return int64(C.espradio_tsf_time())
+}
+
+// DebugStatisDump asks the blob to dump its TX/RX statistics counters via
+// wifi_log (requires Config.Logging >= LogLevelInfo to be visible).
+func DebugStatisDump() {
+	C.espradio_statis_dump()
+}
+
 // DebugInitDiagWords returns the RAM snapshot taken around
 // esp_wifi_init_internal (see the ESPRADIO_DIAG_* enum in espradio.h for the
 // index meanings).  All values are raw words captured without any

@@ -103,7 +103,7 @@ func dumpDiagForever(reason string) {
 func main() {
 	time.Sleep(time.Second)
 	println("initializing radio...")
-	err := espradio.Enable(espradio.Config{Logging: espradio.LogLevelNone})
+	err := espradio.Enable(espradio.Config{Logging: espradio.LogLevelInfo})
 	if err != nil {
 		dumpDiagForever(err.Error())
 	}
@@ -118,6 +118,15 @@ func main() {
 	arenaStats("after-start")
 	dumpIntState("after-start")
 	dumpIntMatrix()
+
+	// MAC liveness: the TSF microsecond counter only advances when the MAC
+	// engine is actually running.  Frozen TSF with clean init = the MAC is
+	// clock-gated, held in reset, or unpowered — and explains zero hardware
+	// interrupts (not even TX-complete) better than any RF-level theory.
+	t0 := espradio.DebugTSF()
+	time.Sleep(100 * time.Millisecond)
+	t1 := espradio.DebugTSF()
+	println("TSF:", int64(t0), "->", int64(t1), "delta(us):", int64(t1-t0))
 
 	// Idle hardware ISR rate: >1000/s with nothing happening means a storming
 	// interrupt source. Isolate which one by masking the INTMTX routes
@@ -143,17 +152,24 @@ func main() {
 			println("sniff ch", ch, "packets:", n)
 		}
 	}
-	println("ISR count:", espradio.DebugISRCount())
+	println("hw ISRs after sniff:", espradio.DebugHWISRCount())
 	for i := 0; i < 2; i++ {
 		aps, err := espradio.Scan()
 		if err != nil {
 			println("could not scan wifi:", err.Error())
 			break
 		}
-		println("scan", i, "found", len(aps), "APs")
+		println("scan", i, "found", len(aps), "APs; hw ISRs:", espradio.DebugHWISRCount())
 		for _, ap := range aps {
 			println("AP:", ap.SSID, "RSSI", ap.RSSI)
 		}
+	}
+	// TX/RX counters straight from the blob: zero TX attempts means frames
+	// never reach the MAC (queue/coex/scheduling); TX attempts without
+	// completions means the MAC engine never finishes anything.
+	espradio.DebugStatisDump()
+	for i := 0; i < 10; i++ { // let the log drain through schedOnce
+		time.Sleep(50 * time.Millisecond)
 	}
 	dumpIntState("after-scan")
 	arenaStats("after-scan")

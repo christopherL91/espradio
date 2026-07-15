@@ -656,6 +656,17 @@ esp_err_t espradio_ap_set_config(const char *ssid, int ssid_len,
     return esp_wifi_set_config(WIFI_IF_AP, &cfg);
 }
 
+/* Bring-up probes: MAC liveness and blob TX/RX statistics. */
+int64_t espradio_tsf_time(void) {
+    return esp_wifi_get_tsf_time(WIFI_IF_STA);
+}
+
+void espradio_statis_dump(void) {
+    /* Output goes through the blob's wifi_log, so g_log_level must be at
+     * least INFO for anything to print. */
+    (void)esp_wifi_statis_dump(0xffffffffu);
+}
+
 static volatile uint32_t espradio_sniff_packets = 0;
 
 static void espradio_promisc_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
