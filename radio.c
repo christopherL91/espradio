@@ -408,12 +408,22 @@ esp_err_t espradio_wifi_init(void) {
         uintptr_t base = (uintptr_t)&cfg;
         __asm__ volatile("" : "+r"(base)); /* opaque: hide alignment from clang */
         uint8_t *b = (uint8_t *)base;
+        /* Probe: read g_wifi_default DIRECTLY at runtime (volatile → real
+         * loads, no constant folding) to tell apart "the source symbol reads
+         * wrong" from "the copy lands wrong".  Report both the source and the
+         * copied value plus their addresses, all through the RAM diag log
+         * which survives console corruption. */
+        volatile const uint32_t *gd = (volatile const uint32_t *)&g_wifi_default_wpa_crypto_funcs;
+        uint32_t gd0 = gd[0], gd1 = gd[1];
         memcpy(b + offsetof(wifi_init_config_t, wpa_crypto_funcs),
                (const void *)&g_wifi_default_wpa_crypto_funcs,
                sizeof(wpa_crypto_funcs_t));
         uint32_t seen = 0;
         memcpy(&seen, b + offsetof(wifi_init_config_t, wpa_crypto_funcs), sizeof(seen));
-        espradio_diag_appendf("wpa.size=%u", (unsigned)seen);
+        espradio_diag_appendf("gd@%lx sz=%lu v=%lx cfg@%lx seen=%lu",
+                              (unsigned long)(uintptr_t)gd,
+                              (unsigned long)gd0, (unsigned long)gd1,
+                              (unsigned long)base, (unsigned long)seen);
     }
     cfg.osi_funcs = s_heap_osi_funcs;
     cfg.nvs_enable = 0;
