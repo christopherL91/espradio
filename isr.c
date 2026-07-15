@@ -90,6 +90,7 @@ void espradio_mark_wifi_isr_slot(int32_t n) {
 
 void espradio_set_isr(int32_t n, void *f, void *arg) {
     if (n >= 0 && n < 32) {
+        printf("espradio: set_isr n=%d fn=%p\n", (int)n, f);
         s_isr_fn[n] = (void (*)(void *))f;
         s_isr_arg[n] = arg;
     }

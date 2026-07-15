@@ -3,6 +3,8 @@
 #include "soc/interrupts.h"
 #include <string.h>
 #include <stddef.h>
+#include <stdarg.h>
+#include <stdio.h>
 
 #ifndef ESPRADIO_RADIO_DEBUG
 #define ESPRADIO_RADIO_DEBUG 0
@@ -90,6 +92,13 @@ static void espradio_bt_irq_prewire(void) {
     }
     s_bt_irq_wired = 1;
 
+#ifdef CONFIG_IDF_TARGET_ESP32C6
+    /* The C6 has no RWBT/RWBLE interrupt sources (its BT controller is a
+     * different, NimBLE-based design); nothing to prewire until BT is
+     * ported. */
+    (void)espradio_bt_irq_stub;
+    return;
+#else
     enum {
         ESPRADIO_BTBB_INUM = 28,
         ESPRADIO_RWBT_INUM = 29,
@@ -105,6 +114,7 @@ static void espradio_bt_irq_prewire(void) {
     ets_isr_attach(ESPRADIO_RWBLE_INUM, espradio_bt_irq_stub, NULL);
 
     ets_isr_unmask((1u << ESPRADIO_BTBB_INUM) | (1u << ESPRADIO_RWBT_INUM) | (1u << ESPRADIO_RWBLE_INUM));
+#endif /* !CONFIG_IDF_TARGET_ESP32C6 */
 }
 
 void espradio_rom_hooks_init(void) {
@@ -176,6 +186,11 @@ static void espradio_disable_all_wdt(void) {
     *(volatile uint32_t *)0x60020048 &= ~(1u << 31);        /* WDT_EN=0 */
     *(volatile uint32_t *)0x60020064 = 0;                   /* re-lock */
 
+#elif defined(CONFIG_IDF_TARGET_ESP32C6)
+    /* Nothing to do: the TinyGo runtime already disables TIMG0/TIMG1 WDT,
+     * the LP WDT and the super watchdog at boot (runtime_esp32c6.go).  The
+     * register addresses in the C3 branch below map to unrelated peripherals
+     * (e.g. TIMG0 at 0x60008000) on this chip. */
 #else /* RISC-V (ESP32-C3) — different RTC_CNTL offsets, same TIMG offsets */
 
     /* --- Clock glitch detector --- */
@@ -307,6 +322,19 @@ esp_err_t espradio_wifi_init(void) {
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     cfg.osi_funcs = s_heap_osi_funcs;
     cfg.nvs_enable = 0;
+#ifdef CONFIG_IDF_TARGET_ESP32C6
+    /* The C6 sdkconfig has CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=1, so
+     * the macro default enables disconnected power management.  On the C6
+     * that activates libpp's pm_disconnected_sleep / .wifislprxiram sleep
+     * path, which calls the ROM's wifi_rf_phy_disable directly — observed on
+     * hardware as the RF powering down every ~500 ms while started-but-not-
+     * connected (i.e. during every scan), independent of esp_phy_disable and
+     * of WIFI_PS_NONE.  Our port has no PMU modem-sleep support, so the MAC
+     * never wakes cleanly.  Both working references disable it: the Xtensa
+     * path above sets sta_disconnected_pm=false, and the Rust esp-wifi port
+     * hardcodes false for every chip. */
+    cfg.sta_disconnected_pm = false;
+#endif
 #endif
 
     extern wifi_osi_funcs_t *wifi_funcs;
@@ -319,12 +347,36 @@ esp_err_t espradio_wifi_init(void) {
     espradio_coex_adapter_init();
     RADIO_DBG("espradio: after coex_adapter_init\n");
     extern esp_err_t coex_pre_init(void);
-    RADIO_DBG("espradio: calling coex_pre_init\n");
     esp_err_t coex_rc = coex_pre_init();
-    RADIO_DBG("espradio: coex_pre_init returned %d\n", (int)coex_rc);
+    if (coex_rc != 0) {
+        printf("espradio: coex_pre_init rc=0x%x\n", (unsigned)coex_rc);
+    }
+#ifdef CONFIG_IDF_TARGET_ESP32C6
+    /* IDF calls coex_init() in esp_wifi_init before esp_wifi_init_internal
+     * (CONFIG_SW_COEXIST_ENABLE is on for the C6); mirror that order.  The
+     * OSI ._coex_init also delegates to the real coex_init, so a second call
+     * from the blob is harmless. */
+    {
+        extern esp_err_t coex_init(void);
+        esp_err_t ci = coex_init();
+        printf("espradio: coex_init rc=0x%x\n", (unsigned)ci);
+    }
+#endif
     RADIO_DBG("espradio: before esp_wifi_init_internal cfg.osi_funcs=%p\n", (void*)cfg.osi_funcs);
 
     esp_err_t ret = esp_wifi_init_internal(&cfg);
+    if (ret != 0) {
+        /* The blob returns ESP_ERR_INVALID_ARG (0x102) from
+         * wifi_osi_funcs_register when the OSI table's _version (offset 0,
+         * must be 8) or _magic (offset 0x1e4, must be 0xDEADBEAF) check
+         * fails — i.e. the heap table was corrupted after we memcpy'd it.
+         * Dump enough state to tell the failure modes apart. */
+        printf("espradio: esp_wifi_init_internal rc=0x%x osi=%p ver=0x%lx magic=0x%lx g_osi_funcs_p=%p\n",
+               (unsigned)ret, (void *)s_heap_osi_funcs,
+               (unsigned long)s_heap_osi_funcs->_version,
+               (unsigned long)s_heap_osi_funcs->_magic,
+               (void *)g_osi_funcs_p);
+    }
     RADIO_DBG("espradio: esp_wifi_init_internal returned %d\n", (int)ret);
 
     if (ret == 0) {
@@ -348,8 +400,13 @@ void espradio_wifi_init_completed(void) {
  * where esp_event_base_t = const char*. Here we provide the same definition without linking libesp_event. */
 esp_event_base_t const WIFI_EVENT = "WIFI_EVENT";
 
+/* On the C6 this is printed unconditionally during bring-up: the blob only
+ * uses net80211_printf for notable failures — in particular
+ * wifi_osi_funcs_register's version/magic mismatch reports, which are the
+ * only explanation the blob gives for esp_wifi_init_internal returning
+ * ESP_ERR_INVALID_ARG. */
 __attribute__((weak)) void net80211_printf(const char *format, ...) {
-#if ESPRADIO_RADIO_DEBUG
+#if ESPRADIO_RADIO_DEBUG || defined(CONFIG_IDF_TARGET_ESP32C6)
     va_list args;
     va_start(args, format);
     printf("espradio net80211: ");

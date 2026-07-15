@@ -3,6 +3,8 @@
 #include <string.h>
 #include <stdio.h>
 
+void espradio_arena_stats(uint32_t *used, uint32_t *capacity);
+
 /* Arena allocator: boundary-tag free-list allocator inside a Go-allocated pool.
  *
  * TinyGo's malloc IS the Go GC allocator (picolibc's malloc/sbrk are not
@@ -115,6 +117,20 @@ void *espradio_arena_alloc(size_t size) {
         }
         prev = (uint8_t **)((uint8_t *)blk + HDR); /* &FREE_NEXT(blk) */
         blk = FREE_NEXT(blk);
+    }
+    /* Always report the first few failures: the WiFi blob treats a NULL from
+     * the OSI allocators as a soft error and continues with critical objects
+     * (interface blocks, NVS shadow, RX buffers) missing — the resulting
+     * failures surface much later and look unrelated. */
+    {
+        static uint32_t s_oom_count;
+        if (s_oom_count < 5u) {
+            s_oom_count++;
+            uint32_t used = 0, cap = 0;
+            espradio_arena_stats(&used, &cap);
+            printf("espradio: arena OOM size=%u used=%u cap=%u\n",
+                   (unsigned)size, (unsigned)used, (unsigned)cap);
+        }
     }
     ARENA_DBG("arena: alloc %zu FAILED (OOM)\n", size);
     return NULL;

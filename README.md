@@ -17,6 +17,20 @@ Currently supports WiFi on the [`esp32c3`](https://www.espressif.com/en/products
 - MQTT client support (uses [`natiu-mqtt`](https://github.com/soypat/natiu-mqtt))
 - QEMU simulation target for ESP32-C3
 
+### ESP32-C6 (experimental)
+
+ESP32-C6 support is under active bring-up and requires TinyGo built from the
+`dev` branch (the `esp32c6` target is not in a TinyGo release yet).  Unlike
+the C3, large parts of the C6 WiFi stack (pp/net80211/phy/coexist) live in
+the chip's mask ROM, so linking needs the ROM symbol addresses from ESP-IDF.
+Those are carried by the in-repo linker script `esp32c6-wifi.ld` (generated
+by `tools/gen_esp32c6_ld.sh`) and the custom target `xiao-esp32c6-wifi.json`.
+Build from the repository root so the linker script is found:
+
+```shell
+CGO_CFLAGS_ALLOW='-fno-short-enums' tinygo flash -target=./xiao-esp32c6-wifi.json -monitor ./examples/scan
+```
+
 ## How to use
 
 This code starts a basic webserver running on a [Seeed Studio XIAO-ESP32C3](https://www.seeedstudio.com/Seeed-XIAO-ESP32C3-p-5431.html) using `espradio` along with the Go stdlib `net/http` package:

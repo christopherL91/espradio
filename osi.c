@@ -1,3 +1,4 @@
+#include "sdkconfig.h"
 #include "esp_coexist_internal.h"
 #include "espradio.h"
 #include <stdarg.h>
@@ -16,7 +17,15 @@ extern wifi_osi_funcs_t espradio_osi_funcs;
 static void espradio_wifi_reset_mac(void);
 void espradio_timer_pending_reset(void);
 
+#ifndef CONFIG_IDF_TARGET_ESP32C6
 wifi_osi_funcs_t *g_osi_funcs_p;
+#else
+/* On the C6, pp/net80211 live in ROM and read g_osi_funcs_p from a fixed
+ * address in the ROM data region (0x4087ff6c, PROVIDE()d by the linker
+ * script from esp32c6.rom.pp.ld).  Defining the symbol here would shadow
+ * that PROVIDE: our code would write one copy while the ROM reads the
+ * other, leaving the ROM's pointer as boot garbage. */
+#endif
 
 /* Declared in radio.c — heap-allocated OSI table placed far from BSS to avoid
  * WiFi DMA corruption.  All runtime table updates go here AND to g_wifi_osi_funcs. */
@@ -65,9 +74,10 @@ esp_err_t espradio_esp_wifi_start(void) {
     return rc;
 }
 
-/* Simple printf backend expected by libcoexist.a. */
+/* Simple printf backend expected by libcoexist.a.  Audible on the C6 during
+ * bring-up: libcoexist reports version/init failures only through here. */
 __attribute__((weak)) void coexist_printf(const char *format, ...) {
-#if ESPRADIO_OSI_DEBUG
+#if ESPRADIO_OSI_DEBUG || defined(CONFIG_IDF_TARGET_ESP32C6)
     va_list args;
     va_start(args, format);
     printf("coexist: ");
@@ -1353,6 +1363,76 @@ void espradio_wifi_delete_queue(void * queue);
  * that never touch libcoexist or ROM code.
  * ----------------------------------------------------------------------- */
 
+#ifdef CONFIG_IDF_TARGET_ESP32C6
+/* Not declared in esp_coexist_internal.h but exported by the C6 libcoexist. */
+extern int coex_pti_get(uint32_t event, uint8_t *pti);
+extern int coex_schm_flexible_period_set(uint8_t period);
+extern uint8_t coex_schm_flexible_period_get(void);
+/* On the C6, pp/net80211 live in ROM and require a functioning coexistence
+ * module: coex_pre_init() must run (it fills the ROM's coexist_funcs table,
+ * without which esp_wifi_init fails), and once it has run, libcoexist
+ * time-slices the RF between WiFi and BT unless the scheme is driven
+ * properly — with stubbed entries the arbiter denies WiFi RX grants and
+ * wifi_rf_phy_disable powers the RF down every ~500ms.  Delegate the OSI
+ * coex entries to the real libcoexist implementation, as ESP-IDF does with
+ * software coexistence enabled (the normal WiFi-only configuration on this
+ * chip). */
+static int espradio_coex_init(void) {
+    int rc = coex_init();
+    printf("espradio: coex_init (osi) rc=%d\n", rc);
+    return rc;
+}
+static void espradio_coex_deinit(void) { coex_deinit(); }
+/* One-line trace: whether the blob ever reaches coex_enable during start is
+ * a key bring-up question on this chip (the RF arbiter stays in its reset
+ * state until then). */
+static int espradio_coex_enable(void) {
+    int rc = coex_enable();
+    printf("espradio: coex_enable rc=%d\n", rc);
+    return rc;
+}
+static void espradio_coex_disable(void) { coex_disable(); }
+static uint32_t espradio_coex_status_get(void) { return coex_status_get(COEX_STATUS_GET_WIFI_BITMAP); }
+static void espradio_coex_condition_set(uint32_t type, bool dissatisfy) {
+    (void)type; (void)dissatisfy; /* not present in the C6 libcoexist */
+}
+static int espradio_coex_wifi_request(uint32_t event, uint32_t latency, uint32_t duration) {
+    return coex_wifi_request(event, latency, duration);
+}
+static int espradio_coex_wifi_release(uint32_t event) { return coex_wifi_release(event); }
+static int espradio_coex_wifi_channel_set(uint8_t primary, uint8_t secondary) {
+    return coex_wifi_channel_set(primary, secondary);
+}
+static int espradio_coex_event_duration_get(uint32_t event, uint32_t *duration) {
+    return coex_event_duration_get(event, duration);
+}
+static int espradio_coex_pti_get(uint32_t event, uint8_t *pti) { return coex_pti_get(event, pti); }
+static void espradio_coex_schm_status_bit_clear(uint32_t type, uint32_t status) {
+    coex_schm_status_bit_clear(type, status);
+}
+static void espradio_coex_schm_status_bit_set(uint32_t type, uint32_t status) {
+    coex_schm_status_bit_set(type, status);
+}
+static int espradio_coex_schm_interval_set(uint32_t interval) { return coex_schm_interval_set(interval); }
+static uint32_t espradio_coex_schm_interval_get(void) { return coex_schm_interval_get(); }
+static uint8_t espradio_coex_schm_curr_period_get(void) { return coex_schm_curr_period_get(); }
+static void *espradio_coex_schm_curr_phase_get(void) { return coex_schm_curr_phase_get(); }
+static int espradio_coex_schm_process_restart(void) { return coex_schm_process_restart(); }
+static int espradio_coex_schm_register_cb(int type, int (*cb)(int)) {
+    return coex_schm_register_callback((coex_schm_callback_type_t)type, (void *)cb);
+}
+static int espradio_coex_register_start_cb(int (*cb)(void)) {
+    /* Exported by the C6 libcoexist (coexist_api.o) — the blob registers a
+     * callback that coexist invokes when the scheme starts; dropping it
+     * would silently skip part of the WiFi start sequencing. */
+    return coex_register_start_cb(cb);
+}
+static int espradio_coex_schm_flexible_period_set(uint8_t period) {
+    return coex_schm_flexible_period_set(period);
+}
+static uint8_t espradio_coex_schm_flexible_period_get(void) { return coex_schm_flexible_period_get(); }
+static void *espradio_coex_schm_get_phase_by_idx(int idx) { return coex_schm_get_phase_by_idx(idx); }
+#else /* !CONFIG_IDF_TARGET_ESP32C6 */
 static int espradio_coex_init(void) { return 0; }
 static void espradio_coex_deinit(void) {}
 static int espradio_coex_enable(void) { return 0; }
@@ -1425,6 +1505,7 @@ static uint8_t espradio_coex_schm_flexible_period_get(void) { return 0; }
 static void *espradio_coex_schm_get_phase_by_idx(int idx) {
     (void)idx; return NULL;
 }
+#endif /* !CONFIG_IDF_TARGET_ESP32C6 */
 
 /* Coexistence adapter (esp_coexist_adapter.h) ********************************************/
 

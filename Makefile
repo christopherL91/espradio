@@ -24,7 +24,7 @@ smoke-test:
 	mkdir -p build
 	rm -rf build/*
 	@for example in ./examples/*/; do \
-		for target in xiao-esp32c3 xiao-esp32s3; do \
+		for target in xiao-esp32c3 xiao-esp32s3 ./xiao-esp32c6-wifi.json; do \
 			echo "CGO_CFLAGS_ALLOW='$(CGO_CFLAGS_ALLOW_PATTERN)' tinygo build -target=$$target -size short -o build/$$(basename $$example) $$example"; \
 			CGO_CFLAGS_ALLOW='$(CGO_CFLAGS_ALLOW_PATTERN)' tinygo build -target=$$target -size short -o build/$$(basename $$example) $$example || exit 1; \
 		done; \

@@ -1,4 +1,4 @@
-//go:build esp32c3 || esp32c3_qemu_target || esp32s3
+//go:build esp32c3 || esp32c3_qemu_target || esp32s3 || esp32c6
 
 package espradio
 
@@ -235,14 +235,22 @@ func Enable(config Config) error {
 // starting the driver.  Start calls schedOnce in a loop to let the blob process
 // its internal startup sequence (posting events, etc.) before Start returns.
 func Start() error {
-	var mode C.wifi_mode_t
-	if code := C.esp_wifi_get_mode(&mode); code != C.ESP_OK {
+	// Force a NULL→STA mode transition instead of trusting esp_wifi_get_mode.
+	// get_mode just returns the NVS-stored opmode (default STA when
+	// nvs_enable=0), and the blob's wifi_set_mode_process early-outs when the
+	// requested mode equals the stored one — WITHOUT creating the interface.
+	// On a fresh boot that means wifi_create_sta never runs, g_ic's STA vif
+	// stays NULL, and esp_wifi_start fails inside wifi_station_start with
+	// ESP_ERR_WIFI_CONN ("sta start fail"); the MAC RX filters are then never
+	// programmed, so scans sweep channels but receive nothing.  Setting
+	// WIFI_MODE_NULL first makes the following set_mode a real transition
+	// (the Rust esp-wifi port does the same).  On targets whose stored mode
+	// is already NULL this is a no-op.
+	if code := C.esp_wifi_set_mode(C.WIFI_MODE_NULL); code != C.ESP_OK {
 		return makeError(code)
 	}
-	if mode != C.WIFI_MODE_STA {
-		if code := C.esp_wifi_set_mode(C.WIFI_MODE_STA); code != C.ESP_OK {
-			return makeError(code)
-		}
+	if code := C.esp_wifi_set_mode(C.WIFI_MODE_STA); code != C.ESP_OK {
+		return makeError(code)
 	}
 
 	C.espradio_set_country_eu_manual()
@@ -415,6 +423,11 @@ func espradio_on_wifi_event(eventID int32, data unsafe.Pointer) {
 
 // StartAP starts the radio in soft-AP mode with the given configuration.
 func StartAP(cfg APConfig) error {
+	// NULL first so the AP transition is real even if the NVS-stored mode is
+	// already AP (see the same dance in Start()).
+	if code := C.esp_wifi_set_mode(C.WIFI_MODE_NULL); code != C.ESP_OK {
+		return makeError(code)
+	}
 	if code := C.esp_wifi_set_mode(C.WIFI_MODE_AP); code != C.ESP_OK {
 		return makeError(code)
 	}
