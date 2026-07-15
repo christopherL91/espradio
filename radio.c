@@ -378,55 +378,75 @@ esp_err_t espradio_wifi_init(void) {
         memcpy(dst, src, sizeof(*dst));
     }
 #else
-    /* RISC-V (C3/C6).  The clang OR-offset bug is NOT Xtensa-only: it also
-     * bites here.  WIFI_INIT_CONFIG_DEFAULT() copies
-     * g_wifi_default_wpa_crypto_funcs into cfg.wpa_crypto_funcs (offset 4);
-     * clang computes the destination &cfg.wpa_crypto_funcs as (base | 4)
-     * instead of (base + 4), which equals base when cfg's stack address has
-     * bit 2 set — so the copy lands 4 bytes low.  The blob then reads
-     * cfg.wpa_crypto_funcs.{size,version} shifted by one field and rejects
-     * init with ESP_ERR_INVALID_ARG (blob log: "crypto funcs expected
-     * size=44 version=1, actual size=1 version=<fnptr>").  Whether cfg lands
-     * on a bit-2-set address depends on surrounding code, which is exactly
-     * the layout-dependent C6 init flake.  (The C3 has been getting lucky.)
+    /* RISC-V (C3/C6): build the config in a STATIC, 16-byte-aligned object
+     * instead of a stack local, with explicit field stores instead of the
+     * WIFI_INIT_CONFIG_DEFAULT() initializer.  Two reasons, both learned the
+     * hard way (S3 bring-up did the same — see the Xtensa block above):
      *
-     * Fix in three layers, strongest last:
-     *   1. aligned(8) makes cfg's stack address have bits 0-2 clear, so
-     *      (base | 4) == (base + 4) for the initializer's own copy.
-     *   2. Redo the wpa_crypto_funcs copy through a base pointer laundered by
-     *      an inline-asm barrier: the compiler cannot assume its alignment,
-     *      so it MUST emit a real ADD (not the OR) for the field address.
-     *      This is codegen-proof and does not depend on where cfg landed.
-     *   3. Re-set osi_funcs afterward via a plain field store (immediate
-     *      offset — never OR-folded), in case a mis-landed initializer copy
-     *      wrote over cfg[0..3].
-     * The redo also records the size the blob will see in the RAM diag log
-     * ("wpa.size="), so a capture confirms both that this code ran and that
-     * the copy is correct. */
-    wifi_init_config_t cfg __attribute__((aligned(8))) = WIFI_INIT_CONFIG_DEFAULT();
+     *  - clang folds &struct->field address ADDs into ORs whenever it can
+     *    prove the base's alignment.  For a stack local that proof rests on
+     *    the ABI stack alignment holding at runtime and on frame-layout luck;
+     *    a fold that goes wrong writes the field to base+0 instead of
+     *    base+offset.  On the C6 that landed the initializer's
+     *    wpa_crypto_funcs copy 4 bytes low, so the blob's wifi_menuconfig_init
+     *    read {size,version} shifted by one field and failed init with
+     *    ESP_ERR_INVALID_ARG ("crypto funcs expected size=44 version=1,
+     *    actual size=1 version=<fnptr>") — flipping between working and
+     *    broken with unrelated code changes.  A static's address is a
+     *    link-time constant with genuinely known alignment, so every fold
+     *    against it is provably correct.  (The C3 blob has the identical
+     *    check and the same stack cfg happened to compile correctly there —
+     *    luck, not design.)
+     *
+     *  - esp_wifi_init_internal passes the cfg POINTER onward with the wifi
+     *    task's init command; a stack cfg dies with this frame while the
+     *    blob may still read through that pointer.
+     *
+     * The field values mirror WIFI_INIT_CONFIG_DEFAULT() exactly (same
+     * config macros), so behavior is unchanged on the C3. */
+    static wifi_init_config_t cfg __attribute__((aligned(16)));
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.osi_funcs              = s_heap_osi_funcs;
+    cfg.static_rx_buf_num      = CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM;
+    cfg.dynamic_rx_buf_num     = CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM;
+    cfg.tx_buf_type            = CONFIG_ESP_WIFI_TX_BUFFER_TYPE;
+    cfg.static_tx_buf_num      = WIFI_STATIC_TX_BUFFER_NUM;
+    cfg.dynamic_tx_buf_num     = WIFI_DYNAMIC_TX_BUFFER_NUM;
+    cfg.rx_mgmt_buf_type       = CONFIG_ESP_WIFI_DYNAMIC_RX_MGMT_BUF;
+    cfg.rx_mgmt_buf_num        = WIFI_RX_MGMT_BUF_NUM_DEF;
+    cfg.cache_tx_buf_num       = WIFI_CACHE_TX_BUFFER_NUM;
+    cfg.csi_enable             = WIFI_CSI_ENABLED;
+    cfg.ampdu_rx_enable        = WIFI_AMPDU_RX_ENABLED;
+    cfg.ampdu_tx_enable        = WIFI_AMPDU_TX_ENABLED;
+    cfg.amsdu_tx_enable        = WIFI_AMSDU_TX_ENABLED;
+    cfg.nvs_enable             = 0;
+    cfg.nano_enable            = WIFI_NANO_FORMAT_ENABLED;
+    cfg.rx_ba_win              = WIFI_DEFAULT_RX_BA_WIN;
+    cfg.wifi_task_core_id      = WIFI_TASK_CORE_ID;
+    cfg.beacon_max_len         = WIFI_SOFTAP_BEACON_MAX_LEN;
+    cfg.mgmt_sbuf_num          = WIFI_MGMT_SBUF_NUM;
+    cfg.feature_caps           = WIFI_FEATURE_CAPS;
+    cfg.sta_disconnected_pm    = WIFI_STA_DISCONNECTED_PM_ENABLED;
+    cfg.espnow_max_encrypt_num = CONFIG_ESP_WIFI_ESPNOW_MAX_ENCRYPT_NUM;
+    cfg.tx_hetb_queue_num      = WIFI_TX_HETB_QUEUE_NUM;
+    cfg.dump_hesigb_enable     = WIFI_DUMP_HESIGB_ENABLED;
+    cfg.magic                  = WIFI_INIT_CONFIG_MAGIC;
     {
-        uintptr_t base = (uintptr_t)&cfg;
-        __asm__ volatile("" : "+r"(base)); /* opaque: hide alignment from clang */
-        uint8_t *b = (uint8_t *)base;
-        /* Probe: read g_wifi_default DIRECTLY at runtime (volatile → real
-         * loads, no constant folding) to tell apart "the source symbol reads
-         * wrong" from "the copy lands wrong".  Report both the source and the
-         * copied value plus their addresses, all through the RAM diag log
-         * which survives console corruption. */
+        /* Copy the WPA crypto table via offsetof + char* (ADD, never OR) and
+         * record what the blob will read: the source symbol's first words
+         * (direct volatile read → catches a bad flash/DROM mapping) and the
+         * copied size (catches a mis-landed copy). */
         volatile const uint32_t *gd = (volatile const uint32_t *)&g_wifi_default_wpa_crypto_funcs;
         uint32_t gd0 = gd[0], gd1 = gd[1];
-        memcpy(b + offsetof(wifi_init_config_t, wpa_crypto_funcs),
+        memcpy((char *)&cfg + offsetof(wifi_init_config_t, wpa_crypto_funcs),
                (const void *)&g_wifi_default_wpa_crypto_funcs,
                sizeof(wpa_crypto_funcs_t));
         uint32_t seen = 0;
-        memcpy(&seen, b + offsetof(wifi_init_config_t, wpa_crypto_funcs), sizeof(seen));
-        espradio_diag_appendf("gd@%lx sz=%lu v=%lx cfg@%lx seen=%lu",
-                              (unsigned long)(uintptr_t)gd,
+        memcpy(&seen, (char *)&cfg + offsetof(wifi_init_config_t, wpa_crypto_funcs), sizeof(seen));
+        espradio_diag_appendf("gd=%lu/%lu cfg@%lx wpa.pre=%lu",
                               (unsigned long)gd0, (unsigned long)gd1,
-                              (unsigned long)base, (unsigned long)seen);
+                              (unsigned long)(uintptr_t)&cfg, (unsigned long)seen);
     }
-    cfg.osi_funcs = s_heap_osi_funcs;
-    cfg.nvs_enable = 0;
 #ifdef CONFIG_IDF_TARGET_ESP32C6
     /* The C6 sdkconfig has CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=1, so
      * the macro default enables disconnected power management.  On the C6
@@ -494,6 +514,11 @@ esp_err_t espradio_wifi_init(void) {
         s_init_diag[ESPRADIO_DIAG_ARENA_CAP]  = cap;
     }
     if (ret != 0) {
+        /* Re-read what the blob's check saw, AFTER the call: pre==44 with
+         * post!=44 means something clobbered cfg during init itself. */
+        uint32_t post = 0;
+        memcpy(&post, (char *)&cfg + offsetof(wifi_init_config_t, wpa_crypto_funcs), sizeof(post));
+        espradio_diag_appendf("rc=%x wpa.post=%lu", (unsigned)ret, (unsigned long)post);
         printf("espradio: esp_wifi_init_internal rc=0x%x osi=%p ver=0x%lx magic=0x%lx g_osi_funcs_p=%p cfg_magic=0x%lx\n",
                (unsigned)ret, (void *)s_heap_osi_funcs,
                (unsigned long)s_heap_osi_funcs->_version,
