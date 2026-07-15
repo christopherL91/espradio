@@ -64,7 +64,7 @@ SECTIONS
     {
         . = ALIGN (4);
         _sbss = ABSOLUTE(.);
-        *(.sbss)
+        *(.sbss .sbss.* .sbss2 .sbss2.* .gnu.linkonce.sb.*) /* incl. -fdata-sections small BSS */
         *(.bss .bss.*)
         . = ALIGN (4);
         _ebss = ABSOLUTE(.);
@@ -77,7 +77,7 @@ SECTIONS
     {
         . = ALIGN (4);
         _sdata = ABSOLUTE(.);
-        *(.sdata)
+        *(.sdata .sdata.* .sdata2 .sdata2.* .gnu.linkonce.s.*) /* incl. -fdata-sections small data */
         *(.data .data.*)
         *(.dram*)
         . = ALIGN (4);
@@ -151,7 +151,7 @@ SECTIONS
     /* Constant global variables, stored in DROM. */
     .rodata : ALIGN(4)
     {
-        *(.rodata*)
+        *(.rodata* .srodata .srodata.*) /* incl. RISC-V small read-only data */
         . = ALIGN (4);
     } >DROM
 

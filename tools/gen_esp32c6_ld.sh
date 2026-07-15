@@ -59,8 +59,21 @@ wrap_provide() {
 }
 
 # 1+2+3: patch the stock script.
+#
+# The .sbss/.sdata/.srodata edits are load-bearing: the stock script only
+# captures *(.sbss) and *(.sdata), but GCC-built archives (the WiFi blobs)
+# and clang cgo objects emit RISC-V small-data sections named .sbss.<sym>,
+# .sdata.<sym> and .srodata[.cst*|.<sym>].  Unmatched sections are ORPHANS
+# placed by lld version-dependent heuristics — with some lld versions they
+# land in the flash-mapped IROM/DROM region, where writes are silently
+# dropped: variables like the blob's wifi_funcs pointer then "cannot be
+# written", which presents as impossible-looking memory corruption that
+# moves around between builds.
 sed -E \
     -e 's/^(    SRAM \(rwx\) : ORIGIN = 0x40800000, LENGTH = )512K(.*)$/\10x7E610 \/* 512K minus ROM stack + ROM WiFi data (SOC_ROM_STACK_START = 0x4087e610) *\/\2/' \
+    -e 's/^([[:space:]]*)\*\(\.sbss\)$/\1*(.sbss .sbss.* .sbss2 .sbss2.* .gnu.linkonce.sb.*) \/* incl. -fdata-sections small BSS *\//' \
+    -e 's/^([[:space:]]*)\*\(\.sdata\)$/\1*(.sdata .sdata.* .sdata2 .sdata2.* .gnu.linkonce.s.*) \/* incl. -fdata-sections small data *\//' \
+    -e 's/^([[:space:]]*)\*\(\.rodata\*\)$/\1*(.rodata* .srodata .srodata.*) \/* incl. RISC-V small read-only data *\//' \
     -e 's/^([[:space:]]*)\*\(\.iram\*\)([[:space:]]*)(\/\*.*\*\/)?$/\1*(.iram*)     \/* code that must run from IRAM *\/\n\1*(.iram1*)    \/* blob IRAM_ATTR code *\/\n\1*(.wifi*iram*) \/* libpp\/libnet80211 IRAM + sleep\/rx paths *\/\n\1*(.coexiram*) \/* libcoexist IRAM (orphans break the boot image) *\/\n\1*(.phyiram*)  \/* libphy IRAM *\//' \
     "$workdir/base.ld"
 
