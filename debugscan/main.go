@@ -1,7 +1,6 @@
 package main
 
 import (
-	"strconv"
 	"time"
 	"unsafe"
 
@@ -62,22 +61,39 @@ func dumpIntMatrix() {
 	}
 }
 
-func hex32(v uint32) string { return "0x" + strconv.FormatUint(uint64(v), 16) }
+// hex32 renders v as fixed-width hex with no library calls (strconv and
+// printf-family formatting are exactly what's under suspicion when memory
+// or varargs handling is broken).
+func hex32(v uint32) string {
+	const digits = "0123456789abcdef"
+	var b [10]byte
+	b[0], b[1] = '0', 'x'
+	for i := 0; i < 8; i++ {
+		b[2+i] = digits[(v>>(28-4*uint(i)))&0xf]
+	}
+	return string(b[:])
+}
+
+// diagNames must match the ESPRADIO_DIAG_* enum order in espradio.h.
+var diagNames = [16]string{
+	"rc", "osiVer", "osiMagic", "osiPtr", "gOsiPtr", "cfgMagic",
+	"coexPre", "coexInit", "arenaUsed", "arenaCap",
+	"cfgAddr", "gd0", "gd1", "wpaPre", "wpaPost", "vaTest",
+}
 
 // dumpDiagForever prints the RAM-captured init diagnostics slowly and
 // repeatedly: the USB-Serial-JTAG console drops/interleaves bytes around
 // reset and under load, so a single fast print often arrives mangled.
+// One value per line, fixed-width, repeated forever — a lossy console
+// eventually delivers every line intact.
 func dumpDiagForever(reason string) {
 	for {
 		w := espradio.DebugInitDiagWords()
 		println("ENABLE FAILED:", reason)
-		time.Sleep(200 * time.Millisecond)
-		println("diag rc=" + hex32(w[0]) + " osiVer=" + hex32(w[1]) + " osiMagic=" + hex32(w[2]) +
-			" cfgMagic=" + hex32(w[5]))
-		time.Sleep(200 * time.Millisecond)
-		println("diag osiPtr=" + hex32(w[3]) + " gOsiPtr=" + hex32(w[4]) +
-			" coexPre=" + hex32(w[6]) + " coexInit=" + hex32(w[7]) +
-			" arena=" + strconv.FormatUint(uint64(w[8]), 10) + "/" + strconv.FormatUint(uint64(w[9]), 10))
+		for i, name := range diagNames {
+			time.Sleep(100 * time.Millisecond)
+			println("D:", name, hex32(w[i]))
+		}
 		time.Sleep(200 * time.Millisecond)
 		println("diaglog:", espradio.DebugInitDiagLog())
 		time.Sleep(3 * time.Second)
@@ -87,7 +103,7 @@ func dumpDiagForever(reason string) {
 func main() {
 	time.Sleep(time.Second)
 	println("initializing radio...")
-	err := espradio.Enable(espradio.Config{Logging: espradio.LogLevelInfo})
+	err := espradio.Enable(espradio.Config{Logging: espradio.LogLevelNone})
 	if err != nil {
 		dumpDiagForever(err.Error())
 	}

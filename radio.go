@@ -298,11 +298,11 @@ func DebugHWISRCount() uint32 {
 }
 
 // DebugInitDiagWords returns the RAM snapshot taken around
-// esp_wifi_init_internal: [rc, osiVersion, osiMagic, osiPtr, gOsiPtr,
-// cfgMagic, coexPreRC, coexInitRC, arenaUsed, arenaCap].  It stays valid
-// after init fails, so it can be dumped repeatedly even when the console
-// dropped the original error output.
-func DebugInitDiagWords() (w [10]uint32) {
+// esp_wifi_init_internal (see the ESPRADIO_DIAG_* enum in espradio.h for the
+// index meanings).  All values are raw words captured without any
+// printf-family formatting, so they stay valid even when formatted logging
+// itself is broken, and can be dumped repeatedly after a failure.
+func DebugInitDiagWords() (w [16]uint32) {
 	for i := range w {
 		w[i] = uint32(C.espradio_init_diag(C.uint32_t(i)))
 	}

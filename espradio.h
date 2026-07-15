@@ -24,18 +24,27 @@ void espradio_call_wifi_isr(void);
 void espradio_mark_wifi_isr_slot(int32_t n);
 uint32_t espradio_get_wifi_isr_count(void);
 
-/* Init diagnostics captured in RAM (readable after console corruption). */
+/* Init diagnostics captured in RAM (readable after console corruption).
+ * All values are stored as raw words — no printf-family formatting anywhere
+ * in the capture path, so they stay trustworthy even if varargs handling is
+ * broken (which the VA_TEST word detects). */
 enum {
     ESPRADIO_DIAG_INIT_RC = 0,   /* esp_wifi_init_internal return code */
     ESPRADIO_DIAG_OSI_VER,       /* heap OSI table _version (want 8) */
     ESPRADIO_DIAG_OSI_MAGIC,     /* heap OSI table _magic (want 0xDEADBEAF) */
     ESPRADIO_DIAG_OSI_PTR,       /* address of the heap OSI table */
     ESPRADIO_DIAG_G_OSI_PTR,     /* g_osi_funcs_p after init */
-    ESPRADIO_DIAG_CFG_MAGIC,     /* stack cfg.magic (want 0x1F2F3F4F) */
+    ESPRADIO_DIAG_CFG_MAGIC,     /* cfg.magic (want 0x1F2F3F4F) */
     ESPRADIO_DIAG_COEX_PRE_RC,   /* coex_pre_init return code */
     ESPRADIO_DIAG_COEX_INIT_RC,  /* coex_init return code */
     ESPRADIO_DIAG_ARENA_USED,
     ESPRADIO_DIAG_ARENA_CAP,
+    ESPRADIO_DIAG_CFG_ADDR,      /* &cfg (static; want an SRAM address) */
+    ESPRADIO_DIAG_GD0,           /* g_wifi_default[0] direct read (want 44) */
+    ESPRADIO_DIAG_GD1,           /* g_wifi_default[1] direct read (want 1) */
+    ESPRADIO_DIAG_WPA_PRE,       /* cfg.wpa_crypto_funcs.size after copy (want 44) */
+    ESPRADIO_DIAG_WPA_POST,      /* same, re-read after esp_wifi_init_internal */
+    ESPRADIO_DIAG_VA_TEST,       /* varargs self-test: want 0xF (4 args correct) */
     ESPRADIO_INIT_DIAG_WORDS
 };
 uint32_t espradio_init_diag(uint32_t idx);

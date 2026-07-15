@@ -293,6 +293,23 @@ uint32_t espradio_init_diag(uint32_t idx) {
     return s_init_diag[idx];
 }
 
+/* Varargs self-test: reads four uint32 varargs after two fixed args and
+ * returns a bitmask of which came through correctly.  If this is not 0xF,
+ * every printf-family value in the logs is unreliable (and blob %s logging
+ * reads wild pointers, spraying random memory fragments into the console). */
+static uint32_t espradio_va_probe(int a, int b, ...) {
+    va_list ap;
+    uint32_t mask = 0;
+    (void)a; (void)b;
+    va_start(ap, b);
+    if (va_arg(ap, uint32_t) == 0x11111111u) mask |= 1u;
+    if (va_arg(ap, uint32_t) == 0x22222222u) mask |= 2u;
+    if (va_arg(ap, uint32_t) == 0x33333333u) mask |= 4u;
+    if (va_arg(ap, uint32_t) == 0x44444444u) mask |= 8u;
+    va_end(ap);
+    return mask;
+}
+
 esp_err_t espradio_wifi_init(void) {
     espradio_rom_hooks_init();
 
@@ -433,19 +450,24 @@ esp_err_t espradio_wifi_init(void) {
     cfg.magic                  = WIFI_INIT_CONFIG_MAGIC;
     {
         /* Copy the WPA crypto table via offsetof + char* (ADD, never OR) and
-         * record what the blob will read: the source symbol's first words
-         * (direct volatile read → catches a bad flash/DROM mapping) and the
-         * copied size (catches a mis-landed copy). */
+         * record — as RAW WORDS, no printf-family formatting anywhere — what
+         * the blob will read: the source symbol's first words (direct
+         * volatile read → catches a bad flash/DROM mapping), the copied size
+         * (catches a mis-landed copy), and a varargs self-test (a broken
+         * va_list ABI poisons every formatted log value, including the
+         * blob's own error reports). */
         volatile const uint32_t *gd = (volatile const uint32_t *)&g_wifi_default_wpa_crypto_funcs;
-        uint32_t gd0 = gd[0], gd1 = gd[1];
+        s_init_diag[ESPRADIO_DIAG_GD0] = gd[0];
+        s_init_diag[ESPRADIO_DIAG_GD1] = gd[1];
         memcpy((char *)&cfg + offsetof(wifi_init_config_t, wpa_crypto_funcs),
                (const void *)&g_wifi_default_wpa_crypto_funcs,
                sizeof(wpa_crypto_funcs_t));
         uint32_t seen = 0;
         memcpy(&seen, (char *)&cfg + offsetof(wifi_init_config_t, wpa_crypto_funcs), sizeof(seen));
-        espradio_diag_appendf("gd=%lu/%lu cfg@%lx wpa.pre=%lu",
-                              (unsigned long)gd0, (unsigned long)gd1,
-                              (unsigned long)(uintptr_t)&cfg, (unsigned long)seen);
+        s_init_diag[ESPRADIO_DIAG_WPA_PRE] = seen;
+        s_init_diag[ESPRADIO_DIAG_CFG_ADDR] = (uint32_t)(uintptr_t)&cfg;
+        s_init_diag[ESPRADIO_DIAG_VA_TEST] =
+            espradio_va_probe(0, 0, 0x11111111u, 0x22222222u, 0x33333333u, 0x44444444u);
     }
 #ifdef CONFIG_IDF_TARGET_ESP32C6
     /* The C6 sdkconfig has CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=1, so
@@ -513,18 +535,12 @@ esp_err_t espradio_wifi_init(void) {
         s_init_diag[ESPRADIO_DIAG_ARENA_USED] = used;
         s_init_diag[ESPRADIO_DIAG_ARENA_CAP]  = cap;
     }
-    if (ret != 0) {
+    {
         /* Re-read what the blob's check saw, AFTER the call: pre==44 with
          * post!=44 means something clobbered cfg during init itself. */
         uint32_t post = 0;
         memcpy(&post, (char *)&cfg + offsetof(wifi_init_config_t, wpa_crypto_funcs), sizeof(post));
-        espradio_diag_appendf("rc=%x wpa.post=%lu", (unsigned)ret, (unsigned long)post);
-        printf("espradio: esp_wifi_init_internal rc=0x%x osi=%p ver=0x%lx magic=0x%lx g_osi_funcs_p=%p cfg_magic=0x%lx\n",
-               (unsigned)ret, (void *)s_heap_osi_funcs,
-               (unsigned long)s_heap_osi_funcs->_version,
-               (unsigned long)s_heap_osi_funcs->_magic,
-               (void *)g_osi_funcs_p,
-               (unsigned long)cfg.magic);
+        s_init_diag[ESPRADIO_DIAG_WPA_POST] = post;
     }
     RADIO_DBG("espradio: esp_wifi_init_internal returned %d\n", (int)ret);
 
