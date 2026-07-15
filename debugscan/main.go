@@ -135,12 +135,33 @@ func main() {
 	// the descriptors are somewhere the MAC DMA cannot reach.
 	const macBase = uintptr(0x600A4000)
 	rxBase := reg(macBase + 0x84)
-	println("MAC RX dscr base:", hex32(rxBase), "reload:", hex32(reg(macBase+0x80)))
-	println("MAC RX ctrl 0x60:", hex32(reg(macBase+0x60)),
-		"0x64:", hex32(reg(macBase+0x64)),
-		"0x68:", hex32(reg(macBase+0x68)))
-	inSRAM := rxBase >= 0x40800000 && rxBase < 0x40880000
-	println("MAC RX base in HP-SRAM:", inSRAM)
+	println("MAC RX dscr base:", hex32(rxBase), "reload/en:", hex32(reg(macBase+0x80)),
+		"cur/next:", hex32(reg(macBase+0x88)))
+	// The MAC stores the descriptor address with the top nibble stripped
+	// (addr & 0xFFFFFF); HP-SRAM is 0x40800000..0x4087FFFF, so the real
+	// descriptor address is 0x40000000 | (reg & 0xFFFFFF).
+	descAddr := uintptr(0x40000000 | (rxBase & 0x00FFFFFF))
+	println("MAC RX dscr real addr:", hex32(uint32(descAddr)))
+	// Walk up to 12 descriptors following the next pointer.  Each WiFi RX
+	// descriptor is 3 words: [0]=flags (bit31 = owner: 1=HW-owned/available),
+	// [1]=buffer pointer, [2]=next pointer.  All-SW-owned (bit31=0) from the
+	// first descriptor means the ring was handed to hardware already
+	// consumed, which is exactly the "rx buffer full from frame #1" symptom.
+	seen := map[uintptr]bool{}
+	for i := 0; i < 12; i++ {
+		if descAddr < 0x40800000 || descAddr >= 0x40880000 || seen[descAddr] {
+			break
+		}
+		seen[descAddr] = true
+		w0 := reg(descAddr)
+		w1 := reg(descAddr + 4)
+		w2 := reg(descAddr + 8)
+		owner := (w0 >> 31) & 1
+		println("  dsc", i, "@", hex32(uint32(descAddr)),
+			"flags:", hex32(w0), "owner(hw=1):", owner,
+			"buf:", hex32(w1), "next:", hex32(w2))
+		descAddr = uintptr(0x40000000 | (w2 & 0x00FFFFFF))
+	}
 
 	// Idle hardware ISR rate: >1000/s with nothing happening means a storming
 	// interrupt source. Isolate which one by masking the INTMTX routes
