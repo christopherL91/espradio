@@ -98,13 +98,6 @@ void espradio_hal_init_clocks_go(void) {
     }
     espradio_c6_clocks_init_once();
     espradio_c6_wifi_clocks(true);
-
-    /* Reset the WiFi MAC once the clocks run.  Without a second-stage
-     * bootloader nothing resets the modem domain across a soft reset: a MAC
-     * left running by the previous firmware can keep RX DMA armed with
-     * descriptors pointing into what is now this image's RAM, corrupting
-     * memory at layout-dependent addresses. */
-    modem_syscon_ll_reset_wifimac(ESPRADIO_MODEM_SYSCON);
 }
 
 void espradio_hal_disable_clocks_go(void) {
@@ -126,13 +119,19 @@ void espradio_hal_wifi_rtc_enable_iso_go(void) {
 void espradio_hal_wifi_rtc_disable_iso_go(void) {
 }
 
-/* OSI _wifi_reset_mac hook.  ESP-IDF's wifi_reset_mac_wrapper on the C6 is
- * modem_clock_module_mac_reset(PERIPH_WIFI_MODULE), i.e. a MODEM_SYSCON
- * WiFi-MAC reset pulse — the blob relies on this to bring the MAC to a known
- * state during hw start.  (esp-hal leaves this empty on the C6, but IDF is
- * the reference for these blobs.) */
+/* OSI _wifi_reset_mac hook — deliberately EMPTY on the C6, matching esp-hal
+ * (which drives these same blobs successfully).
+ *
+ * The blob calls this from wifi_hw_start(), during esp_wifi_start — i.e.
+ * AFTER RX DMA has already been armed at init time (wifi_lmac_init →
+ * ic_init → wDev_Rxbuf_Init → hal_mac_rx_set_base).  A real MODEM_SYSCON
+ * WiFi-MAC reset pulse here wipes the RX descriptor-list base register and
+ * the blob does not re-arm it under our cooperative scheduling, so the MAC
+ * then receives frames but drops every one with "rx buffer full" (HW RX
+ * full#1 == rx_end, rx_suc == 0).  IDF's wrapper does pulse the reset, but
+ * its start path differs; esp-hal's empty version is the safe match for
+ * this port. */
 void espradio_hal_reset_wifi_mac_go(void) {
-    modem_syscon_ll_reset_wifimac(ESPRADIO_MODEM_SYSCON);
 }
 
 /* Referenced by libphy (phy_get_xtal_freq).  The ESP32-C6 always runs from

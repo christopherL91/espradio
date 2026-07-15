@@ -128,6 +128,20 @@ func main() {
 	t1 := espradio.DebugTSF()
 	println("TSF:", int64(t0), "->", int64(t1), "delta(us):", int64(t1-t0))
 
+	// WiFi MAC RX DMA state (block at 0x600A4000).  hal_mac_rx_set_base
+	// writes the RX descriptor-list base at +0x84; +0x80 is the reload
+	// control.  A zero base means the blob never armed RX DMA at all; a
+	// non-zero base pointing outside HP-SRAM (0x40800000..0x4087FFFF) means
+	// the descriptors are somewhere the MAC DMA cannot reach.
+	const macBase = uintptr(0x600A4000)
+	rxBase := reg(macBase + 0x84)
+	println("MAC RX dscr base:", hex32(rxBase), "reload:", hex32(reg(macBase+0x80)))
+	println("MAC RX ctrl 0x60:", hex32(reg(macBase+0x60)),
+		"0x64:", hex32(reg(macBase+0x64)),
+		"0x68:", hex32(reg(macBase+0x68)))
+	inSRAM := rxBase >= 0x40800000 && rxBase < 0x40880000
+	println("MAC RX base in HP-SRAM:", inSRAM)
+
 	// Idle hardware ISR rate: >1000/s with nothing happening means a storming
 	// interrupt source. Isolate which one by masking the INTMTX routes
 	// one at a time (0 = detached from any CPU interrupt).
