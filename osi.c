@@ -80,6 +80,12 @@ __attribute__((weak)) void coexist_printf(const char *format, ...) {
 #if ESPRADIO_OSI_DEBUG || defined(CONFIG_IDF_TARGET_ESP32C6)
     va_list args;
     va_start(args, format);
+    {
+        va_list copy;
+        va_copy(copy, args);
+        espradio_diag_vappend("coex:", format, copy);
+        va_end(copy);
+    }
     printf("coexist: ");
     vprintf(format, args);
     va_end(args);
@@ -1238,6 +1244,11 @@ static void espradio_log_writev(unsigned int level, const char* tag, const char*
         if ((size_t)n >= sizeof(buf)) {
             buf[sizeof(buf)-1] = '\0';
         }
+        /* Blob error/warning logs are prime init-failure evidence; keep a
+         * RAM copy since the console drops bytes exactly during init. */
+        if (level <= 2u) {
+            espradio_diag_appendf("[wifi%u]%s", level, buf);
+        }
         if (tag && tag[0]) {
             printf("[wifi][%u][%s] %s\n", level, tag, buf);
         } else {
@@ -1388,6 +1399,7 @@ static void espradio_coex_deinit(void) { coex_deinit(); }
  * state until then). */
 static int espradio_coex_enable(void) {
     int rc = coex_enable();
+    espradio_diag_appendf("coex_enable rc=%d", rc);
     printf("espradio: coex_enable rc=%d\n", rc);
     return rc;
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"time"
 	"unsafe"
 
@@ -44,13 +45,34 @@ func isrRate(tag string, d time.Duration) uint32 {
 	return n
 }
 
+func hex32(v uint32) string { return "0x" + strconv.FormatUint(uint64(v), 16) }
+
+// dumpDiagForever prints the RAM-captured init diagnostics slowly and
+// repeatedly: the USB-Serial-JTAG console drops/interleaves bytes around
+// reset and under load, so a single fast print often arrives mangled.
+func dumpDiagForever(reason string) {
+	for {
+		w := espradio.DebugInitDiagWords()
+		println("ENABLE FAILED:", reason)
+		time.Sleep(200 * time.Millisecond)
+		println("diag rc=" + hex32(w[0]) + " osiVer=" + hex32(w[1]) + " osiMagic=" + hex32(w[2]) +
+			" cfgMagic=" + hex32(w[5]))
+		time.Sleep(200 * time.Millisecond)
+		println("diag osiPtr=" + hex32(w[3]) + " gOsiPtr=" + hex32(w[4]) +
+			" coexPre=" + hex32(w[6]) + " coexInit=" + hex32(w[7]) +
+			" arena=" + strconv.FormatUint(uint64(w[8]), 10) + "/" + strconv.FormatUint(uint64(w[9]), 10))
+		time.Sleep(200 * time.Millisecond)
+		println("diaglog:", espradio.DebugInitDiagLog())
+		time.Sleep(3 * time.Second)
+	}
+}
+
 func main() {
 	time.Sleep(time.Second)
 	println("initializing radio...")
 	err := espradio.Enable(espradio.Config{Logging: espradio.LogLevelInfo})
 	if err != nil {
-		println("could not enable radio:", err.Error())
-		return
+		dumpDiagForever(err.Error())
 	}
 	arenaStats("after-enable")
 	println("starting radio...")
@@ -103,6 +125,9 @@ func main() {
 	arenaStats("after-scan")
 	println("done; ISR count:", espradio.DebugISRCount())
 	for {
-		time.Sleep(time.Second)
+		time.Sleep(5 * time.Second)
+		// Repeat the captured diagnostics so a late console attach still
+		// sees them, even on a "successful" run.
+		println("diaglog:", espradio.DebugInitDiagLog())
 	}
 }

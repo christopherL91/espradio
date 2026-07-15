@@ -286,6 +286,26 @@ func DebugISRCount() uint32 {
 	return uint32(C.espradio_get_wifi_isr_count())
 }
 
+// DebugInitDiagWords returns the RAM snapshot taken around
+// esp_wifi_init_internal: [rc, osiVersion, osiMagic, osiPtr, gOsiPtr,
+// cfgMagic, coexPreRC, coexInitRC, arenaUsed, arenaCap].  It stays valid
+// after init fails, so it can be dumped repeatedly even when the console
+// dropped the original error output.
+func DebugInitDiagWords() (w [10]uint32) {
+	for i := range w {
+		w[i] = uint32(C.espradio_init_diag(C.uint32_t(i)))
+	}
+	return w
+}
+
+// DebugInitDiagLog returns the first blob error/warning messages captured in
+// RAM (net80211_printf, coexist_printf, wifi_log warnings and errors).
+func DebugInitDiagLog() string {
+	var buf [512]byte
+	n := C.espradio_diag_log_copy((*C.char)(unsafe.Pointer(&buf[0])), 512)
+	return string(buf[:n])
+}
+
 // Scan performs a single Wi-Fi scan pass and returns the list of discovered access points.
 func Scan() ([]AccessPoint, error) {
 	C.espradio_ensure_osi_ptr()

@@ -233,6 +233,66 @@ static void espradio_disable_all_wdt(void) {
 #endif
 }
 
+/* ---- Init diagnostics that survive console corruption ----
+ *
+ * The USB-Serial-JTAG console drops and interleaves bytes during init
+ * (host re-enumeration after reset, FIFO overrun under load), which is
+ * exactly when the interesting failures print.  Capture the first error
+ * messages and an init snapshot in RAM; the application can dump them
+ * slowly and repeatedly afterwards (espradio.DebugInitDiag*). */
+#define ESPRADIO_DIAG_LOG_CAP 512
+
+static char s_diag_log[ESPRADIO_DIAG_LOG_CAP];
+static volatile uint32_t s_diag_log_len;
+static volatile uint32_t s_init_diag[ESPRADIO_INIT_DIAG_WORDS];
+
+void espradio_diag_vappend(const char *prefix, const char *format, va_list args) {
+    uint32_t len = s_diag_log_len;
+    if (len + 8u >= ESPRADIO_DIAG_LOG_CAP) {
+        return; /* keep the FIRST messages; later ones are consequences */
+    }
+    int n;
+    if (prefix != NULL && prefix[0] != '\0') {
+        n = snprintf(&s_diag_log[len], ESPRADIO_DIAG_LOG_CAP - len, "%s", prefix);
+        if (n > 0) {
+            len += (uint32_t)n;
+            if (len + 8u >= ESPRADIO_DIAG_LOG_CAP) { s_diag_log_len = ESPRADIO_DIAG_LOG_CAP; return; }
+        }
+    }
+    n = vsnprintf(&s_diag_log[len], ESPRADIO_DIAG_LOG_CAP - len, format, args);
+    if (n > 0) {
+        len += (uint32_t)n;
+        if (len >= ESPRADIO_DIAG_LOG_CAP) len = ESPRADIO_DIAG_LOG_CAP - 1;
+        /* separator instead of newlines so the dump stays one screen line */
+        if (len + 2u < ESPRADIO_DIAG_LOG_CAP) {
+            if (s_diag_log[len - 1u] == '\n') len--;
+            s_diag_log[len++] = ' ';
+            s_diag_log[len++] = '|';
+        }
+    }
+    s_diag_log_len = len;
+}
+
+void espradio_diag_appendf(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    espradio_diag_vappend(NULL, format, args);
+    va_end(args);
+}
+
+uint32_t espradio_diag_log_copy(char *dst, uint32_t cap) {
+    uint32_t n = s_diag_log_len;
+    if (n > ESPRADIO_DIAG_LOG_CAP) n = ESPRADIO_DIAG_LOG_CAP;
+    if (n > cap) n = cap;
+    memcpy(dst, s_diag_log, n);
+    return n;
+}
+
+uint32_t espradio_init_diag(uint32_t idx) {
+    if (idx >= ESPRADIO_INIT_DIAG_WORDS) return 0;
+    return s_init_diag[idx];
+}
+
 esp_err_t espradio_wifi_init(void) {
     espradio_rom_hooks_init();
 
@@ -348,6 +408,7 @@ esp_err_t espradio_wifi_init(void) {
     RADIO_DBG("espradio: after coex_adapter_init\n");
     extern esp_err_t coex_pre_init(void);
     esp_err_t coex_rc = coex_pre_init();
+    s_init_diag[ESPRADIO_DIAG_COEX_PRE_RC] = (uint32_t)coex_rc;
     if (coex_rc != 0) {
         printf("espradio: coex_pre_init rc=0x%x\n", (unsigned)coex_rc);
     }
@@ -359,23 +420,41 @@ esp_err_t espradio_wifi_init(void) {
     {
         extern esp_err_t coex_init(void);
         esp_err_t ci = coex_init();
-        printf("espradio: coex_init rc=0x%x\n", (unsigned)ci);
+        s_init_diag[ESPRADIO_DIAG_COEX_INIT_RC] = (uint32_t)ci;
+        if (ci != 0) {
+            printf("espradio: coex_init rc=0x%x\n", (unsigned)ci);
+        }
     }
 #endif
     RADIO_DBG("espradio: before esp_wifi_init_internal cfg.osi_funcs=%p\n", (void*)cfg.osi_funcs);
 
     esp_err_t ret = esp_wifi_init_internal(&cfg);
+
+    /* Snapshot the state the blob's two ESP_ERR_INVALID_ARG (0x102) checks
+     * looked at, in RAM, so the outcome is readable even when the console
+     * drops bytes: wifi_osi_funcs_register validates the heap OSI table's
+     * _version (offset 0, must be 8) and _magic (offset 0x1e4, must be
+     * 0xDEADBEAF); wifi_menuconfig_init validates cfg->magic (0x1F2F3F4F) —
+     * cfg lives on this goroutine's stack. */
+    s_init_diag[ESPRADIO_DIAG_INIT_RC]   = (uint32_t)ret;
+    s_init_diag[ESPRADIO_DIAG_OSI_VER]   = (uint32_t)s_heap_osi_funcs->_version;
+    s_init_diag[ESPRADIO_DIAG_OSI_MAGIC] = (uint32_t)s_heap_osi_funcs->_magic;
+    s_init_diag[ESPRADIO_DIAG_OSI_PTR]   = (uint32_t)(uintptr_t)s_heap_osi_funcs;
+    s_init_diag[ESPRADIO_DIAG_G_OSI_PTR] = (uint32_t)(uintptr_t)g_osi_funcs_p;
+    s_init_diag[ESPRADIO_DIAG_CFG_MAGIC] = (uint32_t)cfg.magic;
+    {
+        uint32_t used = 0, cap = 0;
+        espradio_arena_stats(&used, &cap);
+        s_init_diag[ESPRADIO_DIAG_ARENA_USED] = used;
+        s_init_diag[ESPRADIO_DIAG_ARENA_CAP]  = cap;
+    }
     if (ret != 0) {
-        /* The blob returns ESP_ERR_INVALID_ARG (0x102) from
-         * wifi_osi_funcs_register when the OSI table's _version (offset 0,
-         * must be 8) or _magic (offset 0x1e4, must be 0xDEADBEAF) check
-         * fails — i.e. the heap table was corrupted after we memcpy'd it.
-         * Dump enough state to tell the failure modes apart. */
-        printf("espradio: esp_wifi_init_internal rc=0x%x osi=%p ver=0x%lx magic=0x%lx g_osi_funcs_p=%p\n",
+        printf("espradio: esp_wifi_init_internal rc=0x%x osi=%p ver=0x%lx magic=0x%lx g_osi_funcs_p=%p cfg_magic=0x%lx\n",
                (unsigned)ret, (void *)s_heap_osi_funcs,
                (unsigned long)s_heap_osi_funcs->_version,
                (unsigned long)s_heap_osi_funcs->_magic,
-               (void *)g_osi_funcs_p);
+               (void *)g_osi_funcs_p,
+               (unsigned long)cfg.magic);
     }
     RADIO_DBG("espradio: esp_wifi_init_internal returned %d\n", (int)ret);
 
@@ -409,6 +488,12 @@ __attribute__((weak)) void net80211_printf(const char *format, ...) {
 #if ESPRADIO_RADIO_DEBUG || defined(CONFIG_IDF_TARGET_ESP32C6)
     va_list args;
     va_start(args, format);
+    {
+        va_list copy;
+        va_copy(copy, args);
+        espradio_diag_vappend("n80211:", format, copy);
+        va_end(copy);
+    }
     printf("espradio net80211: ");
     vprintf(format, args);
     va_end(args);
