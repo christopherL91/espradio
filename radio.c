@@ -499,20 +499,10 @@ esp_err_t espradio_wifi_init(void) {
     if (coex_rc != 0) {
         printf("espradio: coex_pre_init rc=0x%x\n", (unsigned)coex_rc);
     }
-#ifdef CONFIG_IDF_TARGET_ESP32C6
-    /* IDF calls coex_init() in esp_wifi_init before esp_wifi_init_internal
-     * (CONFIG_SW_COEXIST_ENABLE is on for the C6); mirror that order.  The
-     * OSI ._coex_init also delegates to the real coex_init, so a second call
-     * from the blob is harmless. */
-    {
-        extern esp_err_t coex_init(void);
-        esp_err_t ci = coex_init();
-        s_init_diag[ESPRADIO_DIAG_COEX_INIT_RC] = (uint32_t)ci;
-        if (ci != 0) {
-            printf("espradio: coex_init rc=0x%x\n", (unsigned)ci);
-        }
-    }
-#endif
+    /* Deliberately do NOT call coex_init() here.  esp-radio's WiFi-only path
+     * runs coex_pre_init (above) but skips coex_init entirely; activating the
+     * full coex scheme with no BT/154 traffic makes the RF arbiter starve
+     * WiFi RX.  See espradio_coex_init() in osi.c. */
     RADIO_DBG("espradio: before esp_wifi_init_internal cfg.osi_funcs=%p\n", (void*)cfg.osi_funcs);
 
     esp_err_t ret = esp_wifi_init_internal(&cfg);

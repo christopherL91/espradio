@@ -1389,9 +1389,18 @@ extern uint8_t coex_schm_flexible_period_get(void);
  * software coexistence enabled (the normal WiFi-only configuration on this
  * chip). */
 static int espradio_coex_init(void) {
-    int rc = coex_init();
-    printf("espradio: coex_init (osi) rc=%d\n", rc);
-    return rc;
+    /* Return success WITHOUT calling the real coex_init, matching esp-radio's
+     * WiFi-only path (its coex_init() OSI entry returns 0 unless the "coex"
+     * feature is built).  coex_pre_init() still runs (it fills the ROM
+     * coexist_funcs table, which pp/net80211 need), but the full coex scheme
+     * is never initialized — so the RF arbiter stays inactive and WiFi keeps
+     * the radio.  Calling the real coex_init here activates the arbiter, and
+     * with no BT/154 traffic and no scheme driving it, the arbiter tore down
+     * WiFi RX continuously (HW rx_abort in the hundreds of millions, rx_suc=0
+     * with a perfectly valid HW-owned RX descriptor ring).  coex_enable()
+     * below safely no-ops while coex is uninitialized (coex_core_enable
+     * guards on the init flag). */
+    return 0;
 }
 static void espradio_coex_deinit(void) { coex_deinit(); }
 /* One-line trace: whether the blob ever reaches coex_enable during start is
