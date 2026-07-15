@@ -390,18 +390,30 @@ esp_err_t espradio_wifi_init(void) {
      * on a bit-2-set address depends on surrounding code, which is exactly
      * the layout-dependent C6 init flake.  (The C3 has been getting lucky.)
      *
-     * Two-layer fix, same as the Xtensa path above:
-     *   1. aligned(8) forces cfg's stack address to have bits 0-2 clear, so
+     * Fix in three layers, strongest last:
+     *   1. aligned(8) makes cfg's stack address have bits 0-2 clear, so
      *      (base | 4) == (base + 4) for the initializer's own copy.
-     *   2. Redo the wpa_crypto_funcs copy through offsetof + char* so the
-     *      compiler emits an ADD regardless, and re-set osi_funcs afterward
-     *      in case a mis-landed copy clobbered it. */
+     *   2. Redo the wpa_crypto_funcs copy through a base pointer laundered by
+     *      an inline-asm barrier: the compiler cannot assume its alignment,
+     *      so it MUST emit a real ADD (not the OR) for the field address.
+     *      This is codegen-proof and does not depend on where cfg landed.
+     *   3. Re-set osi_funcs afterward via a plain field store (immediate
+     *      offset — never OR-folded), in case a mis-landed initializer copy
+     *      wrote over cfg[0..3].
+     * The redo also records the size the blob will see in the RAM diag log
+     * ("wpa.size="), so a capture confirms both that this code ran and that
+     * the copy is correct. */
     wifi_init_config_t cfg __attribute__((aligned(8))) = WIFI_INIT_CONFIG_DEFAULT();
     {
-        const wpa_crypto_funcs_t *src = &g_wifi_default_wpa_crypto_funcs;
-        wpa_crypto_funcs_t *dst = (wpa_crypto_funcs_t *)(
-            (char *)&cfg + offsetof(wifi_init_config_t, wpa_crypto_funcs));
-        memcpy(dst, src, sizeof(*dst));
+        uintptr_t base = (uintptr_t)&cfg;
+        __asm__ volatile("" : "+r"(base)); /* opaque: hide alignment from clang */
+        uint8_t *b = (uint8_t *)base;
+        memcpy(b + offsetof(wifi_init_config_t, wpa_crypto_funcs),
+               (const void *)&g_wifi_default_wpa_crypto_funcs,
+               sizeof(wpa_crypto_funcs_t));
+        uint32_t seen = 0;
+        memcpy(&seen, b + offsetof(wifi_init_config_t, wpa_crypto_funcs), sizeof(seen));
+        espradio_diag_appendf("wpa.size=%u", (unsigned)seen);
     }
     cfg.osi_funcs = s_heap_osi_funcs;
     cfg.nvs_enable = 0;
