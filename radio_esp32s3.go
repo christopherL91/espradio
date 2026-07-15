@@ -19,6 +19,7 @@ import "C"
 import (
 	"device/esp"
 	"runtime/interrupt"
+	"sync/atomic"
 
 	_ "tinygo.org/x/espradio/esp32s3"
 )
@@ -73,6 +74,7 @@ const arenaPoolSize = 48 * 1024
 // Just mask the level-triggered interrupt and wake the scheduler; schedOnce()
 // will call espradio_call_wifi_isr() on its own goroutine stack.
 func wifiISRHandler(interrupt.Interrupt) {
+	atomic.AddUint32(&hwWifiISRs, 1)
 	C.espradio_ints_off(C.uint32_t(1 << wifiCPUInterrupt))
 	kickSched()
 }

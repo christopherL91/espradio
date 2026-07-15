@@ -75,7 +75,13 @@ static esp_phy_calibration_data_t s_phy_cal_data;
 static volatile uint32_t s_phy_spin_lock;
 static uint16_t s_phy_modem_flags_local;
 static uint32_t s_phy_track_pll_started_local;
-static uint8_t s_phy_ant_need_update_local = 1u;
+/* IDF semantics: false until an esp_phy_set_ant()-style call configures
+ * antenna switching.  With the default (single-antenna) setup neither
+ * ESP-IDF nor the Rust esp-wifi port EVER calls phy_ant_update() — doing so
+ * right after calibration reprograms the RF front-end antenna mux with a
+ * made-up config (ant_dft_cfg/ant_tx_cfg/ant_rx_cfg) and can disconnect the
+ * RX path that calibration just set up. */
+static uint8_t s_phy_ant_need_update_local = 0u;
 static uint32_t *s_phy_digital_regs_mem_ptr;
 static uint8_t s_phy_is_digital_regs_stored_local;
 static uint8_t s_phy_dig_reg_backup_warned_once;

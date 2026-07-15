@@ -282,8 +282,19 @@ func Start() error {
 }
 
 // DebugISRCount returns the number of WiFi ISR invocations (for debugging).
+// This counts BOTH hardware interrupts and the soft polls issued by
+// schedOnce; use DebugHWISRCount for actual hardware interrupt deliveries.
 func DebugISRCount() uint32 {
 	return uint32(C.espradio_get_wifi_isr_count())
+}
+
+// hwWifiISRs counts hardware WiFi interrupt deliveries only (incremented by
+// the per-target wifiISRHandler).
+var hwWifiISRs uint32
+
+// DebugHWISRCount returns the number of hardware WiFi interrupt deliveries.
+func DebugHWISRCount() uint32 {
+	return atomic.LoadUint32(&hwWifiISRs)
 }
 
 // DebugInitDiagWords returns the RAM snapshot taken around

@@ -18,6 +18,7 @@ import "C"
 import (
 	"device/esp"
 	"runtime/interrupt"
+	"sync/atomic"
 
 	_ "tinygo.org/x/espradio/esp32c3"
 )
@@ -70,6 +71,7 @@ const arenaPoolSize = 48 * 1024
 // hardware interrupt handler.  On RISC-V the interrupt context can
 // safely call the blob's ISR without stack overflow concerns.
 func wifiISRHandler(interrupt.Interrupt) {
+	atomic.AddUint32(&hwWifiISRs, 1)
 	C.espradio_call_wifi_isr()
 	kickSched()
 }

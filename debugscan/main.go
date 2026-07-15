@@ -36,13 +36,30 @@ func arenaStats(tag string) {
 	println(tag, "arena used:", used, "/", capacity)
 }
 
-// isrRate measures WiFi ISR invocations over the given window.
+// isrRate measures WiFi ISR invocations over the given window.  The total
+// includes schedOnce's soft polls (dominated by scheduler churn); "hw" is
+// actual hardware interrupt deliveries, which is the number that matters
+// when hunting a storming interrupt source.
 func isrRate(tag string, d time.Duration) uint32 {
 	start := espradio.DebugISRCount()
+	hwStart := espradio.DebugHWISRCount()
 	time.Sleep(d)
 	n := espradio.DebugISRCount() - start
-	println(tag, "ISR count over", int64(d/time.Millisecond), "ms:", n)
-	return n
+	hw := espradio.DebugHWISRCount() - hwStart
+	println(tag, "over", int64(d/time.Millisecond), "ms: hw:", hw, "total(+soft):", n)
+	return hw
+}
+
+// dumpIntMatrix lists every peripheral interrupt source routed to a CPU
+// interrupt, so a storming source that the blob routed behind our back
+// (via ROM intr_matrix_set) is visible.  ESP32-C6 has 77 sources.
+func dumpIntMatrix() {
+	for src := uintptr(0); src < 77; src++ {
+		v := reg(intmtxBase + src*4)
+		if v != 0 {
+			println("  intmtx src", int(src), "-> cpu int", v)
+		}
+	}
 }
 
 func hex32(v uint32) string { return "0x" + strconv.FormatUint(uint64(v), 16) }
@@ -84,8 +101,9 @@ func main() {
 	}
 	arenaStats("after-start")
 	dumpIntState("after-start")
+	dumpIntMatrix()
 
-	// Idle ISR rate: >1000/s with nothing happening means a storming
+	// Idle hardware ISR rate: >1000/s with nothing happening means a storming
 	// interrupt source. Isolate which one by masking the INTMTX routes
 	// one at a time (0 = detached from any CPU interrupt).
 	if n := isrRate("idle", 500*time.Millisecond); n > 500 {

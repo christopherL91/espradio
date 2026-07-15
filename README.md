@@ -31,6 +31,12 @@ Build from the repository root so the linker script is found:
 CGO_CFLAGS_ALLOW='-fno-short-enums' tinygo flash -target=./xiao-esp32c6-wifi.json -monitor ./examples/scan
 ```
 
+Note for Seeed XIAO ESP32C6 boards (not needed on plain ESP32-C6-WROOM-1
+devkits): the board has an onboard RF switch that must be enabled before the
+radio can reach an antenna — drive GPIO3 low (switch power) and GPIO14 low
+(built-in antenna; high selects the external U.FL connector) early in main,
+e.g. with the machine package.
+
 ## How to use
 
 This code starts a basic webserver running on a [Seeed Studio XIAO-ESP32C3](https://www.seeedstudio.com/Seeed-XIAO-ESP32C3-p-5431.html) using `espradio` along with the Go stdlib `net/http` package:

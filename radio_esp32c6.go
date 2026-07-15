@@ -17,6 +17,7 @@ import "C"
 
 import (
 	"runtime/interrupt"
+	"sync/atomic"
 	"unsafe"
 
 	_ "tinygo.org/x/espradio/esp32c6"
@@ -65,6 +66,7 @@ const arenaPoolSize = 80 * 1024
 // ESP32-C6 (RISC-V): call the blob's WiFi ISR directly from the
 // hardware interrupt handler, same as the ESP32-C3.
 func wifiISRHandler(interrupt.Interrupt) {
+	atomic.AddUint32(&hwWifiISRs, 1)
 	C.espradio_call_wifi_isr()
 	kickSched()
 }
