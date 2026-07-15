@@ -62,11 +62,11 @@ SECTIONS
      */
     .bss (NOLOAD) : ALIGN(4)
     {
-        . = ALIGN (4);
+        . = ALIGN(8); /* keep SIZEOF 8-aligned: feeds the flash-offset dummy math */
         _sbss = ABSOLUTE(.);
         *(.sbss .sbss.* .sbss2 .sbss2.* .gnu.linkonce.sb.*) /* incl. -fdata-sections small BSS */
         *(.bss .bss.*)
-        . = ALIGN (4);
+        . = ALIGN(8); /* keep SIZEOF 8-aligned: feeds the flash-offset dummy math */
         _ebss = ABSOLUTE(.);
     } >SRAM
 
@@ -75,12 +75,12 @@ SECTIONS
      */
     .data : ALIGN(4)
     {
-        . = ALIGN (4);
+        . = ALIGN(8); /* keep SIZEOF 8-aligned: feeds the flash-offset dummy math */
         _sdata = ABSOLUTE(.);
         *(.sdata .sdata.* .sdata2 .sdata2.* .gnu.linkonce.s.*) /* incl. -fdata-sections small data */
         *(.data .data.*)
         *(.dram*)
-        . = ALIGN (4);
+        . = ALIGN(8); /* keep SIZEOF 8-aligned: feeds the flash-offset dummy math */
         _edata = ABSOLUTE(.);
     } >SRAM
 
@@ -100,11 +100,11 @@ SECTIONS
         *(.text.handleInterruptASM) /* must be in SRAM, within JAL range of _vector_table */
         . = ALIGN(256);
         *(.text.exception_vectors)
-        . = ALIGN(4);
+        . = ALIGN(8); /* keep SIZEOF 8-aligned: feeds the flash-offset dummy math */
     } > SRAM
 
     /* Heap starts after IRAM. */
-    . = ALIGN(4);
+    . = ALIGN(8); /* keep SIZEOF 8-aligned: feeds the flash-offset dummy math */
     _heap_start = ABSOLUTE(.);
     _heap_end = ORIGIN(SRAM) + LENGTH(SRAM);
 
@@ -129,6 +129,7 @@ SECTIONS
     .text : ALIGN(4)
     {
         *(.text .text.*)
+        . = ALIGN(8); /* keep SIZEOF(.text) 8-aligned: feeds the DROM dummy math */
     } > IROM
 
     /* === DROM sections (flash-mapped read-only data) === */
@@ -152,7 +153,7 @@ SECTIONS
     .rodata : ALIGN(4)
     {
         *(.rodata* .srodata .srodata.*) /* incl. RISC-V small read-only data */
-        . = ALIGN (4);
+        . = ALIGN(8); /* keep SIZEOF 8-aligned: feeds the flash-offset dummy math */
     } >DROM
 
     /DISCARD/ :
@@ -192,6 +193,17 @@ Cache_MSPI_MMU_Set = 0x400006b8;
 
 /* PHY ROM data */
 phy_param_rom = 0x4087fce8;
+
+/* Flash-mapping congruence guards: the boot ROM's MMU maps IROM/DROM in 64K
+ * pages by (flash offset ≡ vaddr) congruence, and the dummy sections above
+ * encode the image packer's exact layout.  If lld ever bumps .text/.rodata
+ * past the dummy-computed address (input alignment > 8) or the packer pads
+ * a segment, code/rodata would silently read byte-shifted from flash — fail
+ * the link instead. */
+ASSERT(ADDR(.text) == ORIGIN(IROM) + SIZEOF(.irom_dummy),
+       ".text flash congruence broken: irom_dummy arithmetic no longer matches")
+ASSERT(ADDR(.rodata) == ORIGIN(DROM) + SIZEOF(.rodata_dummy),
+       ".rodata flash congruence broken: all rodata would read byte-shifted")
 
 /* ====================================================================
  * ESP32-C6 mask-ROM symbols for the WiFi/BT blobs.

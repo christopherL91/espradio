@@ -69,13 +69,42 @@ wrap_provide() {
 # dropped: variables like the blob's wifi_funcs pointer then "cannot be
 # written", which presents as impossible-looking memory corruption that
 # moves around between builds.
+# The ALIGN(8) edits below are ALSO load-bearing.  The .irom_dummy /
+# .rodata_dummy sections compute where .text/.rodata land in the flash image
+# from SIZEOF() of the preceding sections, and the MMU maps 64K pages by
+# (flash offset ≡ vaddr) congruence.  Two things silently break that math:
+# the ESP image packer pads each segment's file data to 4 bytes, and lld
+# bumps an output section's address up to its largest input alignment.  With
+# RISC-V compressed instructions SIZEOF(.text) is frequently ≡ 2 (mod 4), and
+# then ALL of .rodata is flash-mapped a few bytes off: every string constant
+# and lookup table reads shifted.  Whether a given build breaks depends on
+# section sizes — the historical "layout-flaky" behavior.  Padding .data,
+# .iram and .text to 8 in-file keeps the dummy arithmetic exact, and the
+# appended ASSERTs turn any remaining mismatch into a link error.
 sed -E \
     -e 's/^(    SRAM \(rwx\) : ORIGIN = 0x40800000, LENGTH = )512K(.*)$/\10x7E610 \/* 512K minus ROM stack + ROM WiFi data (SOC_ROM_STACK_START = 0x4087e610) *\/\2/' \
     -e 's/^([[:space:]]*)\*\(\.sbss\)$/\1*(.sbss .sbss.* .sbss2 .sbss2.* .gnu.linkonce.sb.*) \/* incl. -fdata-sections small BSS *\//' \
     -e 's/^([[:space:]]*)\*\(\.sdata\)$/\1*(.sdata .sdata.* .sdata2 .sdata2.* .gnu.linkonce.s.*) \/* incl. -fdata-sections small data *\//' \
     -e 's/^([[:space:]]*)\*\(\.rodata\*\)$/\1*(.rodata* .srodata .srodata.*) \/* incl. RISC-V small read-only data *\//' \
+    -e 's/^([[:space:]]*)\. = ALIGN \(4\);$/\1. = ALIGN(8); \/* keep SIZEOF 8-aligned: feeds the flash-offset dummy math *\//' \
+    -e 's/^([[:space:]]*)\*\(\.text \.text\.\*\)$/\1*(.text .text.*)\n\1. = ALIGN(8); \/* keep SIZEOF(.text) 8-aligned: feeds the DROM dummy math *\//' \
     -e 's/^([[:space:]]*)\*\(\.iram\*\)([[:space:]]*)(\/\*.*\*\/)?$/\1*(.iram*)     \/* code that must run from IRAM *\/\n\1*(.iram1*)    \/* blob IRAM_ATTR code *\/\n\1*(.wifi*iram*) \/* libpp\/libnet80211 IRAM + sleep\/rx paths *\/\n\1*(.coexiram*) \/* libcoexist IRAM (orphans break the boot image) *\/\n\1*(.phyiram*)  \/* libphy IRAM *\//' \
+    -e 's/^([[:space:]]*)\. = ALIGN\(4\);$/\1. = ALIGN(8); \/* keep SIZEOF 8-aligned: feeds the flash-offset dummy math *\//' \
     "$workdir/base.ld"
+
+cat <<'EOF'
+
+/* Flash-mapping congruence guards: the boot ROM's MMU maps IROM/DROM in 64K
+ * pages by (flash offset ≡ vaddr) congruence, and the dummy sections above
+ * encode the image packer's exact layout.  If lld ever bumps .text/.rodata
+ * past the dummy-computed address (input alignment > 8) or the packer pads
+ * a segment, code/rodata would silently read byte-shifted from flash — fail
+ * the link instead. */
+ASSERT(ADDR(.text) == ORIGIN(IROM) + SIZEOF(.irom_dummy),
+       ".text flash congruence broken: irom_dummy arithmetic no longer matches")
+ASSERT(ADDR(.rodata) == ORIGIN(DROM) + SIZEOF(.rodata_dummy),
+       ".rodata flash congruence broken: all rodata would read byte-shifted")
+EOF
 
 cat <<'EOF'
 
