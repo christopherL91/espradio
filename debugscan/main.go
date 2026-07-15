@@ -163,6 +163,17 @@ func main() {
 		descAddr = uintptr(0x40000000 | (w2 & 0x00FFFFFF))
 	}
 
+	// Full MAC control-register block (0x600A4000..0x600A40FC).  RX aborts at
+	// clock rate with a valid HW-owned ring, so the RX-datapath enable/filter
+	// must be wrong at a register we haven't named — dump the whole block so
+	// it can be compared against the documented reset/enabled values.
+	println("MAC block 0x600A4000 (offset: w0 w1 w2 w3):")
+	for off := uintptr(0); off < 0x100; off += 0x10 {
+		b := macBase + off
+		println("  +"+hex32(uint32(off))[6:],
+			hex32(reg(b)), hex32(reg(b+4)), hex32(reg(b+8)), hex32(reg(b+0xc)))
+	}
+
 	// Idle hardware ISR rate: >1000/s with nothing happening means a storming
 	// interrupt source. Isolate which one by masking the INTMTX routes
 	// one at a time (0 = detached from any CPU interrupt).
