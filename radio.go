@@ -115,6 +115,12 @@ func startSchedTicker() {
 
 var wifiInitDone uint32
 
+// pollWifiISRInSched controls whether schedOnce spuriously polls the blob's
+// WiFi ISR.  Required on the ESP32-S3 (its hardware WiFi interrupt does not
+// fire reliably); harmful on the ESP32-C6 (see schedOnce).  Per-target files
+// override it in initHardware.
+var pollWifiISRInSched = true
+
 func schedOnce() {
 	// Snapshot INTENABLE before any blob code runs so that wifi_unmask can
 	// restore TinyGo-owned bits (e.g. GPIO at bit 10 on ESP32-S3) that the
@@ -135,7 +141,16 @@ func schedOnce() {
 
 	// Poll WiFi ISR: work around missing hardware interrupt on ESP32-S3.
 	// Only poll after init is complete (blob ISR not registered until then).
-	if atomic.LoadUint32(&wifiInitDone) != 0 {
+	//
+	// On targets whose hardware WiFi interrupt is reliable (ESP32-C6), do NOT
+	// poll: schedOnce runs extremely often (the blob task busy-yields, driving
+	// it ~100k/s), and calling the blob's MAC ISR that many times per second —
+	// each call reads and clears the MAC RX interrupt status — continuously
+	// tears down in-flight receptions.  On the C6 this presented as the MAC
+	// detecting frames (rx_end) but completing none (rx_suc=0, rx_abort at
+	// clock rate) even though the RX DMA ring is armed identically to ESP-IDF.
+	// The real hardware interrupt (wifiISRHandler) services RX instead.
+	if pollWifiISRInSched && atomic.LoadUint32(&wifiInitDone) != 0 {
 		C.espradio_call_wifi_isr()
 	}
 

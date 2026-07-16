@@ -49,6 +49,12 @@ func initHardware() error {
 	for addr := uintptr(romWifiBssStart); addr < romWifiBssEnd; addr += 4 {
 		*(*uint32)(unsafe.Pointer(addr)) = 0
 	}
+
+	// The C6's hardware WiFi interrupt is reliable, so schedOnce must not
+	// spuriously poll the blob's MAC ISR — doing so at the scheduler's rate
+	// (~100k/s) continuously aborts in-flight RX.  Let the real interrupt
+	// drive it instead.
+	pollWifiISRInSched = false
 	return nil
 }
 
