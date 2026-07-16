@@ -167,12 +167,29 @@ func main() {
 	// clock rate with a valid HW-owned ring, so the RX-datapath enable/filter
 	// must be wrong at a register we haven't named — dump the whole block so
 	// it can be compared against the documented reset/enabled values.
+	// Dump through +0x200 so the 11ax RX-buffer-queue registers written by
+	// mac_last_rxbuf_init (0x600A4120..0x600A416C) are captured too — on the
+	// C6 those, not just the legacy +0x84 base, may gate RX DMA.
 	println("MAC block 0x600A4000 (offset: w0 w1 w2 w3):")
-	for off := uintptr(0); off < 0x100; off += 0x10 {
+	for off := uintptr(0); off < 0x200; off += 0x10 {
 		b := macBase + off
 		println("  +"+hex32(uint32(off))[6:],
 			hex32(reg(b)), hex32(reg(b+4)), hex32(reg(b+8)), hex32(reg(b+0xc)))
 	}
+
+	// EXPERIMENT: force the MAC to re-read the RX descriptor list.  Bit 0 of
+	// 0x600A4080 is the "descriptor reload" trigger (hal_mac_rx_set_dscr_reload
+	// sets it).  If the MAC latched an empty/stale ring at the blob's
+	// set_base time — before our cooperatively-scheduled descriptor writes
+	// were visible to the MAC DMA — the ring never gets picked up and every
+	// frame reports "buffer full" despite a valid HW-owned ring.  Poking the
+	// reload bit now (descriptors long since in SRAM) should make the DMA
+	// re-fetch and start cycling.
+	println("EXPERIMENT: triggering RX descriptor reload (0x600A4080 |= 1)")
+	writeReg(0x600A4080, reg(0x600A4080)|1)
+	time.Sleep(50 * time.Millisecond)
+	println("  after reload: reload/en:", hex32(reg(0x600A4080)),
+		"cur/next:", hex32(reg(0x600A4088)), "last:", hex32(reg(0x600A408C)))
 
 	// Idle hardware ISR rate: >1000/s with nothing happening means a storming
 	// interrupt source. Isolate which one by masking the INTMTX routes
@@ -190,14 +207,30 @@ func main() {
 		writeReg(mtxWifiMac, savedMac)
 	}
 
+	// EXPERIMENT 2: continuous RX descriptor reload during the sniff.  If the
+	// DMA never loads the ring because the periodic reload the ISR refill path
+	// (wDev_AppendRxBlocks) normally issues never runs, then hammering the
+	// reload bit from a goroutine — which yields to the blob during its
+	// Sleep — should make frames start landing.  A goroutine pulses the reload
+	// bit every 2ms; SniffCountOnChannel's internal sleeps let it run.
+	reloadPulsing := true
+	go func() {
+		for reloadPulsing {
+			writeReg(0x600A4080, reg(0x600A4080)|1)
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+
 	for _, ch := range []uint8{1, 6, 11} {
 		n, err := espradio.SniffCountOnChannel(ch, 2*time.Second)
 		if err != nil {
 			println("sniff error ch", ch, err.Error())
 		} else {
-			println("sniff ch", ch, "packets:", n)
+			println("sniff(reload) ch", ch, "packets:", n,
+				"cur:", hex32(reg(0x600A4088)), "last:", hex32(reg(0x600A408C)))
 		}
 	}
+	reloadPulsing = false
 	println("hw ISRs after sniff:", espradio.DebugHWISRCount())
 	for i := 0; i < 2; i++ {
 		aps, err := espradio.Scan()
