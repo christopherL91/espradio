@@ -177,6 +177,23 @@ func main() {
 			hex32(reg(b)), hex32(reg(b+4)), hex32(reg(b+8)), hex32(reg(b+0xc)))
 	}
 
+	// PMU power-domain state for the WiFi (modem) domain and HP-SRAM.  If the
+	// MAC counts frames (rx_end) but the RX-DMA writeback to SRAM never runs,
+	// the domain may be force-isolated or force-powered-down at the PMU while
+	// its register/BB logic still ticks.  HPWIFI_CNTL (0x600B0104) reset
+	// default is 0x1c (PU|NO_RESET|NO_ISO = forced on); iso=bit1, pd=bit5 set —
+	// or pu=bit2 clear — would clamp the domain's DMA path to memory.
+	// MEM_CNTL (0x600B010C): hp_mem_iso[3:0], hp_mem_pd[7:4] isolate/power the
+	// HP-SRAM banks the DMA must write.
+	hpwifi := reg(0x600B0104)
+	memcntl := reg(0x600B010C)
+	println("PMU HPWIFI_CNTL:", hex32(hpwifi),
+		"reset:", (hpwifi>>0)&1, "iso:", (hpwifi>>1)&1, "pu:", (hpwifi>>2)&1,
+		"no_reset:", (hpwifi>>3)&1, "no_iso:", (hpwifi>>4)&1, "pd:", (hpwifi>>5)&1)
+	println("PMU MEM_CNTL:", hex32(memcntl),
+		"hp_mem_iso:", (memcntl>>0)&0xf, "hp_mem_pd:", (memcntl>>4)&0xf,
+		"no_iso:", (memcntl>>24)&0xf, "pu:", (memcntl>>28)&0xf)
+
 	// Idle hardware ISR rate: >1000/s with nothing happening means a storming
 	// interrupt source. Isolate which one by masking the INTMTX routes
 	// one at a time (0 = detached from any CPU interrupt).
