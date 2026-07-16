@@ -92,11 +92,43 @@ static void espradio_c6_wifi_clocks(bool en) {
     lpcon->i2c_mst_clk_conf.clk_i2c_mst_sel_160m = en;
 }
 
+/* Reset the WiFi MAC, WiFi baseband and RF front-end together, up front.
+ *
+ * On PMU-based chips (C6) a system reset restarts the digital core but leaves
+ * the modem power domain untouched, so the WiFi MAC/BB/FE inherit whatever
+ * state the bootloader (or a previous WiFi session) left there.  In our case
+ * that left the MAC RX-DMA engine wedged: the descriptor ring arms correctly
+ * and frames are received (rx_end increments) but the RX-DMA write-back never
+ * runs — cur/last descriptor status registers frozen, rx_suc=0, every frame
+ * "rx buffer full" — and poking the descriptor-reload bit does not recover it.
+ * Only a MODEM_SYSCON reset clears the stale engine state.
+ *
+ * esp-hal/esp-radio does this same reset in enable_wifi_power_domain(), BEFORE
+ * the WiFi clocks are enabled and long before RX is armed.  It must be up here
+ * (not in the _wifi_reset_mac OSI hook): that hook is called from
+ * wifi_hw_start() AFTER wDev_Rxbuf_Init has armed the RX DMA, so a reset there
+ * wipes the freshly-armed descriptor base instead of cleaning stale state.
+ *
+ * All three sub-blocks are held in reset simultaneously (bitfield writes to the
+ * volatile modem_rst_conf are read-modify-write, so the bits accumulate) and
+ * then released together, matching esp-radio's single set/clear of
+ * modem_rst_conf. */
+static void espradio_c6_reset_modem(void) {
+    modem_syscon_dev_t *syscon = ESPRADIO_MODEM_SYSCON;
+    syscon->modem_rst_conf.rst_wifimac = 1;
+    syscon->modem_rst_conf.rst_wifibb = 1;
+    syscon->modem_rst_conf.rst_fe = 1;
+    syscon->modem_rst_conf.rst_fe = 0;
+    syscon->modem_rst_conf.rst_wifibb = 0;
+    syscon->modem_rst_conf.rst_wifimac = 0;
+}
+
 void espradio_hal_init_clocks_go(void) {
     if (__sync_fetch_and_add(&s_clock_refcnt, 1u) != 0u) {
         return;
     }
     espradio_c6_clocks_init_once();
+    espradio_c6_reset_modem();
     espradio_c6_wifi_clocks(true);
 }
 
@@ -119,18 +151,19 @@ void espradio_hal_wifi_rtc_enable_iso_go(void) {
 void espradio_hal_wifi_rtc_disable_iso_go(void) {
 }
 
-/* OSI _wifi_reset_mac hook — deliberately EMPTY on the C6, matching esp-hal
- * (which drives these same blobs successfully).
+/* OSI _wifi_reset_mac hook — deliberately EMPTY on the C6, matching esp-radio
+ * (whose reset_wifi_mac() is also empty on this chip).
  *
  * The blob calls this from wifi_hw_start(), during esp_wifi_start — i.e.
  * AFTER RX DMA has already been armed at init time (wifi_lmac_init →
- * ic_init → wDev_Rxbuf_Init → hal_mac_rx_set_base).  A real MODEM_SYSCON
- * WiFi-MAC reset pulse here wipes the RX descriptor-list base register and
- * the blob does not re-arm it under our cooperative scheduling, so the MAC
- * then receives frames but drops every one with "rx buffer full" (HW RX
- * full#1 == rx_end, rx_suc == 0).  IDF's wrapper does pulse the reset, but
- * its start path differs; esp-hal's empty version is the safe match for
- * this port. */
+ * ic_init → wDev_Rxbuf_Init → hal_mac_rx_set_base).  A MODEM_SYSCON WiFi-MAC
+ * reset pulse here wipes the RX descriptor-list base register and the blob
+ * does not re-arm it under our cooperative scheduling, so the MAC then
+ * receives frames but drops every one with "rx buffer full".  The MAC/BB/FE
+ * reset that clears stale engine state is instead done ONCE, up front, in
+ * espradio_hal_init_clocks_go() (see espradio_c6_reset_modem) — before the
+ * WiFi clocks are enabled and long before RX is armed, exactly as esp-radio
+ * does it in enable_wifi_power_domain(). */
 void espradio_hal_reset_wifi_mac_go(void) {
 }
 
