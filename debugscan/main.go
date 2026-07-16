@@ -194,6 +194,44 @@ func main() {
 		"hp_mem_iso:", (memcntl>>0)&0xf, "hp_mem_pd:", (memcntl>>4)&0xf,
 		"no_iso:", (memcntl>>24)&0xf, "pu:", (memcntl>>28)&0xf)
 
+	// EXPERIMENT: does the RX-DMA engine touch memory at all, and does a full
+	// software re-arm start it?  Plant a sentinel in every descriptor buffer's
+	// first word; if the DMA writes a frame, the sentinel is overwritten.  Then
+	// do the canonical arm sequence the blob's hal does — disable RX (clear
+	// bit31 of +80), re-set the descriptor base (+84), enable RX (set bit31),
+	// reload (set bit0).  The enable 0->1 transition, not the reload bit alone
+	// (already shown to do nothing), is what should make the DMA fetch
+	// descriptor[0] from the base.  Then check whether cur/last advance and any
+	// sentinel was overwritten.
+	{
+		const sentinel = 0xA5A5A5A5
+		bufs := [10]uintptr{}
+		descAddr := uintptr(0x40000000 | (reg(0x600A4084) & 0x00FFFFFF))
+		for i := 0; i < 10 && descAddr >= 0x40800000 && descAddr < 0x40880000; i++ {
+			bufs[i] = uintptr(reg(descAddr + 4))
+			if bufs[i] >= 0x40800000 && bufs[i] < 0x40880000 {
+				writeReg(bufs[i], sentinel)
+			}
+			descAddr = uintptr(0x40000000 | (reg(descAddr+8) & 0x00FFFFFF))
+		}
+		base := reg(0x600A4084)
+		writeReg(0x600A4080, reg(0x600A4080)&^0x80000000) // disable RX
+		writeReg(0x600A4084, base)                        // re-set base
+		writeReg(0x600A4080, reg(0x600A4080)|0x80000000)  // enable RX
+		writeReg(0x600A4080, reg(0x600A4080)|1)           // trigger reload
+		n, _ := espradio.SniffCountOnChannel(1, 2*time.Second)
+		println("re-arm+sniff ch1 packets:", n,
+			"+80:", hex32(reg(0x600A4080)), "cur:", hex32(reg(0x600A4088)),
+			"last:", hex32(reg(0x600A408C)))
+		written := 0
+		for i := 0; i < 10; i++ {
+			if bufs[i] >= 0x40800000 && bufs[i] < 0x40880000 && reg(bufs[i]) != sentinel {
+				written++
+			}
+		}
+		println("re-arm: buffers overwritten by DMA:", written, "/10")
+	}
+
 	// Idle hardware ISR rate: >1000/s with nothing happening means a storming
 	// interrupt source. Isolate which one by masking the INTMTX routes
 	// one at a time (0 = detached from any CPU interrupt).
