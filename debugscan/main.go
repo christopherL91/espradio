@@ -176,6 +176,20 @@ func main() {
 		println("  +"+hex32(uint32(off))[6:],
 			hex32(reg(b)), hex32(reg(b+4)), hex32(reg(b+8)), hex32(reg(b+0xc)))
 	}
+	// mac_txrx_init writes the TX/RX datapath enables at 0x600A4C8C/0x600A4C98
+	// and the MAC-misc block at 0x600A5000+ — regions never compared against
+	// stock IDF.  If the RX-datapath enable differs there, it explains an
+	// inert RX DMA that ignores every ring/reload/enable poke.  Dump both.
+	println("MAC datapath block 0x600A4C00 (abs addr: w0 w1 w2 w3):")
+	for a := uintptr(0x600A4C00); a < 0x600A4D00; a += 0x10 {
+		println("  "+hex32(uint32(a)),
+			hex32(reg(a)), hex32(reg(a+4)), hex32(reg(a+8)), hex32(reg(a+0xc)))
+	}
+	println("MAC-misc block 0x600A5000 (abs addr: w0 w1 w2 w3):")
+	for a := uintptr(0x600A5000); a < 0x600A5100; a += 0x10 {
+		println("  "+hex32(uint32(a)),
+			hex32(reg(a)), hex32(reg(a+4)), hex32(reg(a+8)), hex32(reg(a+0xc)))
+	}
 
 	// PMU power-domain state for the WiFi (modem) domain and HP-SRAM.  If the
 	// MAC counts frames (rx_end) but the RX-DMA writeback to SRAM never runs,
