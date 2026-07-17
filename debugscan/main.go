@@ -190,23 +190,19 @@ func main() {
 		println("  "+hex32(uint32(a)),
 			hex32(reg(a)), hex32(reg(a+4)), hex32(reg(a+8)), hex32(reg(a+0xc)))
 	}
-
-	// EXPERIMENT: four datapath registers differ from working stock IDF.  Three
-	// look like RX-activity counters (differ because IDF's capture was taken
-	// with RX live); 0x600A4CA8 (IDF 0x00ff1000 vs ours 0x00004000) looks like a
-	// structured config value.  Force all four to IDF's values, then sniff — if
-	// RX starts, one was a missing config write; if the HW re-clears them (read
-	// back != written) or packets stay 0, they are downstream status/symptom.
-	writeReg(0x600A4C04, 0x01390139)
-	writeReg(0x600A4C30, 0x0000013c)
-	writeReg(0x600A4C44, reg(0x600A4C44)|0x04000000)
-	writeReg(0x600A4CA8, 0x00ff1000)
-	{
-		n, _ := espradio.SniffCountOnChannel(1, 2*time.Second)
-		println("force-idf-regs sniff ch1 packets:", n,
-			"cur:", hex32(reg(0x600A4088)),
-			"C04:", hex32(reg(0x600A4C04)), "C30:", hex32(reg(0x600A4C30)),
-			"C44:", hex32(reg(0x600A4C44)), "CA8:", hex32(reg(0x600A4CA8)))
+	// MODEM_SYSCON (0x600A9800) and MODEM_LPCON (0x600AF000): the modem-level
+	// clock/reset controls for the WiFi MAC/BB/FE.  A reset-hold or a sub-block
+	// clock gate on the RX-DMA path would live here, invisible in the MAC block.
+	// Last register region not yet compared against stock IDF.
+	println("MODEM_SYSCON block 0x600A9800 (abs addr: w0 w1 w2 w3):")
+	for a := uintptr(0x600A9800); a < 0x600A9900; a += 0x10 {
+		println("  "+hex32(uint32(a)),
+			hex32(reg(a)), hex32(reg(a+4)), hex32(reg(a+8)), hex32(reg(a+0xc)))
+	}
+	println("MODEM_LPCON block 0x600AF000 (abs addr: w0 w1 w2 w3):")
+	for a := uintptr(0x600AF000); a < 0x600AF080; a += 0x10 {
+		println("  "+hex32(uint32(a)),
+			hex32(reg(a)), hex32(reg(a+4)), hex32(reg(a+8)), hex32(reg(a+0xc)))
 	}
 
 	// PMU power-domain state for the WiFi (modem) domain and HP-SRAM.  If the
