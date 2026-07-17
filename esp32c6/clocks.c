@@ -54,11 +54,19 @@ static void espradio_c6_clocks_init_once(void) {
     lpcon->clk_conf_power_st.clk_coex_st_map = 6;
     lpcon->clk_conf_power_st.clk_wifipwr_st_map = 6;
 
-    /* WiFi power clock source selection. */
+    /* WiFi-PWR low-power clock source: select exactly ONE source (the internal
+     * slow oscillator), matching ESP-IDF/esp-hal (MODEM_LPCON.wifi_lp_clk_conf
+     * == 0x1).  These clk_wifipwr_lp_sel_* bits are a one-hot mux selector, not
+     * independent enables; an earlier version set all four at once, muxing
+     * osc_slow, osc_fast, xtal and xtal32k together into the WiFi-PWR block's
+     * clock.  A bad WiFi-PWR clock leaves that block wedged — TSF never advances
+     * and the MAC stays in a state where the RX-DMA engine never runs (frames
+     * are counted at rx_end but rx_suc stays 0 and every one reports rx buffer
+     * full). */
     lpcon->wifi_lp_clk_conf.clk_wifipwr_lp_sel_osc_slow = 1;
-    lpcon->wifi_lp_clk_conf.clk_wifipwr_lp_sel_osc_fast = 1;
-    lpcon->wifi_lp_clk_conf.clk_wifipwr_lp_sel_xtal32k = 1;
-    lpcon->wifi_lp_clk_conf.clk_wifipwr_lp_sel_xtal = 1;
+    lpcon->wifi_lp_clk_conf.clk_wifipwr_lp_sel_osc_fast = 0;
+    lpcon->wifi_lp_clk_conf.clk_wifipwr_lp_sel_xtal32k = 0;
+    lpcon->wifi_lp_clk_conf.clk_wifipwr_lp_sel_xtal = 0;
     lpcon->wifi_lp_clk_conf.clk_wifipwr_lp_div_num = 0;
 
     modem_lpcon_ll_enable_wifipwr_clock(lpcon, true);
