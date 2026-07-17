@@ -191,6 +191,24 @@ func main() {
 			hex32(reg(a)), hex32(reg(a+4)), hex32(reg(a+8)), hex32(reg(a+0xc)))
 	}
 
+	// EXPERIMENT: four datapath registers differ from working stock IDF.  Three
+	// look like RX-activity counters (differ because IDF's capture was taken
+	// with RX live); 0x600A4CA8 (IDF 0x00ff1000 vs ours 0x00004000) looks like a
+	// structured config value.  Force all four to IDF's values, then sniff — if
+	// RX starts, one was a missing config write; if the HW re-clears them (read
+	// back != written) or packets stay 0, they are downstream status/symptom.
+	writeReg(0x600A4C04, 0x01390139)
+	writeReg(0x600A4C30, 0x0000013c)
+	writeReg(0x600A4C44, reg(0x600A4C44)|0x04000000)
+	writeReg(0x600A4CA8, 0x00ff1000)
+	{
+		n, _ := espradio.SniffCountOnChannel(1, 2*time.Second)
+		println("force-idf-regs sniff ch1 packets:", n,
+			"cur:", hex32(reg(0x600A4088)),
+			"C04:", hex32(reg(0x600A4C04)), "C30:", hex32(reg(0x600A4C30)),
+			"C44:", hex32(reg(0x600A4C44)), "CA8:", hex32(reg(0x600A4CA8)))
+	}
+
 	// PMU power-domain state for the WiFi (modem) domain and HP-SRAM.  If the
 	// MAC counts frames (rx_end) but the RX-DMA writeback to SRAM never runs,
 	// the domain may be force-isolated or force-powered-down at the PMU while
